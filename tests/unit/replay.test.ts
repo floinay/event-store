@@ -1,0 +1,26 @@
+import { describe, expect, it } from "vitest";
+import { replayConnectorConfig } from "@event-store/replay";
+
+describe("replay connector", () => {
+  it("uses the same canonical envelope and headers as the live connector", () => {
+    const config = replayConnectorConfig("aug-2026", {
+      hostname: "postgres",
+      port: 5432,
+      user: "event_store_cdc",
+      password: "secret",
+      dbname: "event_store",
+    });
+    expect(config).toMatchObject({
+      "transforms.outbox.table.field.event.id": "event_id",
+      "transforms.outbox.table.field.event.key": "partition_key",
+      "transforms.outbox.table.field.event.type": "event_name",
+      "transforms.outbox.table.field.event.payload": "event_envelope",
+      "transforms.outbox.table.expand.json.payload": "true",
+      "transforms.outbox.route.topic.replacement":
+        "event-store.replay.aug-2026.v1",
+    });
+    expect(
+      config["transforms.outbox.table.fields.additional.placement"],
+    ).toContain("envelope_sha256:header:envelopeHash");
+  });
+});

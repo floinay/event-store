@@ -36,9 +36,14 @@ export function replayConnectorConfig(
     "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
     "transforms.outbox.table.field.event.id": "event_id",
     "transforms.outbox.table.field.event.key": "partition_key",
+    "transforms.outbox.table.field.event.type": "event_name",
     "transforms.outbox.table.field.event.payload": "event_envelope",
     "transforms.outbox.route.by.field": "topic_route",
     "transforms.outbox.route.topic.replacement": `event-store.replay.${replayId}.v1`,
+    "transforms.outbox.table.expand.json.payload": "true",
+    "transforms.outbox.table.op.invalid.behavior": "fatal",
+    "transforms.outbox.table.fields.additional.placement":
+      "event_id:header:id,event_name:header:type,envelope_sha256:header:envelopeHash,namespace:header:namespace,aggregate_type:header:aggregateType,stream_revision:header:streamRevision",
   };
 }
 
