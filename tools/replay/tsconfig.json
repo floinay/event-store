@@ -6,5 +6,9 @@
     "outDir": "dist",
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
+  "references": [
+    { "path": "../../packages/contracts" },
+    { "path": "../../packages/postgres-store" }
+  ],
   "include": ["src/**/*.ts"]
 }

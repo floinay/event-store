@@ -7,6 +7,8 @@
     "default": "./dist/index.js"
   },
   "dependencies": {
+    "@event-store/contracts": "*",
+    "@event-store/postgres-store": "*",
     "pg": "8.22.0"
   },
   "devDependencies": {

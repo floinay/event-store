@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { uuidv7 } from "@event-store/contracts";
-import { ReplayCoordinator } from "@event-store/replay";
+import {
+  appendReplayBarriers,
+  kafkaDefaultPartition,
+  ReplayCoordinator,
+} from "@event-store/replay";
+import { PostgresEventStore } from "@event-store/postgres-store";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
 import type { Pool } from "pg";
 
@@ -48,5 +53,18 @@ suite("replay coordinator", () => {
         )
       ).rows[0]?.status,
     ).toBe("active");
+  });
+
+  it("appends one default-partitioner-verified barrier for every partition", async () => {
+    const barriers = await appendReplayBarriers(
+      new PostgresEventStore(pool),
+      "orders-aug-2026",
+    );
+    expect(barriers).toHaveLength(24);
+    expect(new Set(barriers.map((barrier) => barrier.partition)).size).toBe(24);
+    for (const barrier of barriers)
+      expect(
+        kafkaDefaultPartition(`system|Barrier|${barrier.aggregateId}`),
+      ).toBe(barrier.partition);
   });
 });

@@ -1,5 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
+import { partitionKey, uuidv7 } from "@event-store/contracts";
+import { PostgresEventStore } from "@event-store/postgres-store";
 
 export interface ReplayIdentity {
   projectionName: string;
@@ -11,6 +13,109 @@ export interface ReplayReadiness {
   kafkaLag: bigint;
   expectedChecksum: string;
   actualChecksum: string;
+}
+
+export interface ReplayBarrier {
+  partition: number;
+  aggregateId: string;
+  eventId: string;
+}
+
+const kafkaPartitionCount = 24;
+
+function murmur2(bytes: Uint8Array): number {
+  let hash = 0x9747b28c ^ bytes.length;
+  let index = 0;
+  while (bytes.length - index >= 4) {
+    let word =
+      bytes[index]! |
+      (bytes[index + 1]! << 8) |
+      (bytes[index + 2]! << 16) |
+      (bytes[index + 3]! << 24);
+    word = Math.imul(word, 0x5bd1e995);
+    word ^= word >>> 24;
+    word = Math.imul(word, 0x5bd1e995);
+    hash = Math.imul(hash, 0x5bd1e995) ^ word;
+    index += 4;
+  }
+  switch (bytes.length - index) {
+    case 3:
+      hash ^= bytes[index + 2]! << 16;
+    // fall through
+    case 2:
+      hash ^= bytes[index + 1]! << 8;
+    // fall through
+    case 1:
+      hash ^= bytes[index]!;
+      hash = Math.imul(hash, 0x5bd1e995);
+  }
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0x5bd1e995);
+  return (hash ^ (hash >>> 15)) >>> 0;
+}
+
+export function kafkaDefaultPartition(key: string): number {
+  return (murmur2(Buffer.from(key)) & 0x7fffffff) % kafkaPartitionCount;
+}
+
+function barrierAggregateId(partition: number): string {
+  for (let attempts = 0; attempts < 10_000; attempts += 1) {
+    const aggregateId = uuidv7();
+    if (
+      kafkaDefaultPartition(
+        partitionKey({
+          namespace: "system",
+          aggregateType: "Barrier",
+          aggregateId,
+        }),
+      ) === partition
+    )
+      return aggregateId;
+  }
+  throw new Error(
+    `unable to find a Kafka key for replay partition ${partition}`,
+  );
+}
+
+/** Appends exactly one partition-verified barrier event for each replay partition. */
+export async function appendReplayBarriers(
+  store: PostgresEventStore,
+  replayId: string,
+): Promise<ReplayBarrier[]> {
+  if (!/^[a-z0-9-]{1,63}$/.test(replayId))
+    throw new Error("replayId must be lowercase alphanumeric/hyphen");
+  const barriers: ReplayBarrier[] = [];
+  for (let partition = 0; partition < kafkaPartitionCount; partition += 1) {
+    const aggregateId = barrierAggregateId(partition);
+    const requestId = uuidv7();
+    const result = await store.append({
+      producerService: "replay-coordinator",
+      namespace: "system",
+      aggregateType: "Barrier",
+      aggregateId,
+      requestId,
+      expectedRevision: { kind: "no_stream" },
+      context: {
+        requestId,
+        correlationId: uuidv7(),
+        causationId: null,
+        actor: { kind: "system", subjectRef: "replay-coordinator" },
+      },
+      events: [
+        {
+          eventName: "system.replay-barrier",
+          schemaVersion: 1,
+          occurredAt: new Date().toISOString(),
+          payload: { replayId, partition },
+        },
+      ],
+    });
+    const eventId = result.events[0]?.eventId;
+    if (eventId === undefined)
+      throw new Error("replay barrier append returned no event");
+    barriers.push({ partition, aggregateId, eventId });
+  }
+  return barriers;
 }
 
 /** Coordinates the durable DB half of a temporary connector rebuild. */
