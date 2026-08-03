@@ -123,10 +123,18 @@ export class KafkaProjectionRunner {
           headers,
           value: message.value,
         };
+        if (expectedOffsets.get(`${topic}/${partition}`) === undefined)
+          await alignAssignment();
         const expected = expectedOffsets.get(`${topic}/${partition}`);
         if (expected === undefined)
           throw new Error(`partition ${topic}/${partition} was not assigned`);
-        if (record.offset !== expected) {
+        if (record.offset < expected) {
+          await consumer.commitOffsets([
+            { topic, partition, offset: expected.toString() },
+          ]);
+          return;
+        }
+        if (record.offset > expected) {
           consumer.seek({ topic, partition, offset: expected.toString() });
           return;
         }
