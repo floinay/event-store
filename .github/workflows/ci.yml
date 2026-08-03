@@ -14,7 +14,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 24.18.0, cache: npm }
+      - uses: bufbuild/buf-setup-action@v1
       - run: npm ci
+      - run: buf lint
+      - run: buf breaking --against '.git#branch=main'
       - run: npm run format
       - run: npm run lint
       - run: npm run typecheck
