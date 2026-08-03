@@ -100,4 +100,40 @@ suite("append SQL contract", () => {
       );
     expect(error?.code).toBe("22023");
   });
+
+  it("normalizes an omitted causationId to null in a direct SQL append", async () => {
+    const requestId = id();
+    const result = await pool.query<{ event_envelope: { context: unknown } }>(
+      `SELECT event_envelope FROM event_store.events WHERE event_id IN (
+         SELECT (entry->>'eventId')::uuid
+         FROM jsonb_array_elements((
+           SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)
+         )->'events') AS entries(entry)
+       )`,
+      [
+        "orders-command",
+        "orders",
+        "Order",
+        id(),
+        requestId,
+        "no_stream",
+        null,
+        JSON.stringify([
+          {
+            eventName: "order.created",
+            schemaVersion: 1,
+            occurredAt: "2026-08-04T10:12:18.120Z",
+            payload: {},
+          },
+        ]),
+        JSON.stringify({
+          correlationId: id(),
+          actor: { kind: "user", subjectRef: "usr_1" },
+        }),
+      ],
+    );
+    expect(result.rows[0]?.event_envelope.context).toMatchObject({
+      causationId: null,
+    });
+  });
 });
