@@ -113,10 +113,18 @@ suite("projection recovery", () => {
     expect(
       (
         await pool.query(
-          "SELECT next_offset::text FROM projection_runtime.checkpoints WHERE projection_name=$1 AND generation_id=$2",
+          "SELECT next_offset::text FROM projection_runtime.checkpoints WHERE projection_name=$1 AND generation_id=$2 AND last_event_id IS NOT NULL",
           [projectionName, generationId],
         )
       ).rows[0]?.next_offset,
     ).toBe("1");
+    expect(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM projection_runtime.checkpoints WHERE projection_name=$1 AND generation_id=$2",
+          [projectionName, generationId],
+        )
+      ).rows[0]?.count,
+    ).toBe(24);
   }, 60_000);
 });
