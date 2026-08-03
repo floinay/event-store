@@ -127,9 +127,7 @@ export class EventStoreStack {
         OFFSET_STORAGE_REPLICATION_FACTOR: "1",
         STATUS_STORAGE_REPLICATION_FACTOR: "1",
         KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter",
-        VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter",
-        VALUE_CONVERTER_SCHEMAS_ENABLE: "false",
-        CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false",
+        VALUE_CONVERTER: "org.apache.kafka.connect.storage.StringConverter",
         EXACTLY_ONCE_SOURCE_SUPPORT: "enabled",
         CONNECT_EXACTLY_ONCE_SOURCE_SUPPORT: "enabled",
       })
@@ -189,7 +187,7 @@ export class EventStoreStack {
           "transforms.outbox.route.by.field": "topic_route",
           "transforms.outbox.route.topic.regex": "(.*)",
           "transforms.outbox.route.topic.replacement": "$1.events.v1",
-          "transforms.outbox.table.expand.json.payload": "true",
+          "transforms.outbox.table.expand.json.payload": "false",
           "transforms.outbox.table.op.invalid.behavior": "fatal",
           "transforms.outbox.route.tombstone.on.empty.payload": "false",
           "transforms.outbox.table.fields.additional.placement":

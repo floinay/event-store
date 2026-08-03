@@ -14,7 +14,7 @@ export const EventContextSchema = z
   .object({
     requestId: UuidV7,
     correlationId: UuidV7,
-    causationId: UuidV7.nullable().optional(),
+    causationId: UuidV7.nullable(),
     actor: ActorSchema,
     traceparent: z.string().max(128).optional(),
   })

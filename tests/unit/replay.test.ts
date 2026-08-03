@@ -15,7 +15,7 @@ describe("replay connector", () => {
       "transforms.outbox.table.field.event.key": "partition_key",
       "transforms.outbox.table.field.event.type": "event_name",
       "transforms.outbox.table.field.event.payload": "event_envelope",
-      "transforms.outbox.table.expand.json.payload": "true",
+      "transforms.outbox.table.expand.json.payload": "false",
       "transforms.outbox.route.topic.replacement":
         "event-store.replay.aug-2026.v1",
     });

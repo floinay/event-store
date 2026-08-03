@@ -103,6 +103,7 @@ suite("Debezium CDC", () => {
       aggregateId: string;
       streamRevision: string;
       eventName: string;
+      context: { causationId: string | null };
     };
     expect(event.key).toBe(`orders|Order|${aggregateId}`);
     if (envelope.aggregateId === undefined)
@@ -115,6 +116,7 @@ suite("Debezium CDC", () => {
     );
     expect(envelope.streamRevision).toBe("1");
     expect(envelope.eventName).toBe("order.created");
+    expect(envelope.context.causationId).toBeNull();
     if (event.headers.id === undefined)
       throw new Error(`EventRouter headers: ${JSON.stringify(event.headers)}`);
     expect(event.headers.id).toBe(envelope.eventId);
