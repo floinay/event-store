@@ -21,6 +21,10 @@ function rawEnvelope(value: Buffer): unknown {
   }
 }
 
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 /** KafkaJS-compatible adapter with manual, post-transaction offset commits. */
 export class KafkaProjectionRunner {
   constructor(
@@ -40,9 +44,8 @@ export class KafkaProjectionRunner {
       kafkaJS: {
         groupId: this.config.groupId,
         autoCommit: false,
-        // A new projection group must see retained records before its first
-        // checkpoint is established; checkpoint seeks handle later restarts.
-        fromBeginning: true,
+        // Assignment-time database seeks determine the initial position.
+        fromBeginning: false,
         readUncommitted: false,
         allowAutoTopicCreation: false,
         minBytes: 1,
@@ -60,8 +63,48 @@ export class KafkaProjectionRunner {
     await admin.connect();
     await consumer.connect();
     await consumer.subscribe({ topics: [this.config.topic], replace: true });
+    let resolveAssigned!: () => void;
+    let rejectAssigned!: (error: unknown) => void;
+    const assigned = new Promise<void>((resolve, reject) => {
+      resolveAssigned = resolve;
+      rejectAssigned = reject;
+    });
+    const expectedOffsets = new Map<string, bigint>();
+    const alignAssignment = async (): Promise<void> => {
+      const assignments = consumer
+        .assignment()
+        .filter((assignment) => assignment.topic === this.config.topic);
+      if (assignments.length === 0) return;
+      const offsets = await admin.fetchTopicOffsets(this.config.topic, {
+        isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
+      });
+      for (const assignment of assignments) {
+        const low = offsets.find(
+          (offset) => offset.partition === assignment.partition,
+        )?.low;
+        if (low === undefined)
+          throw new Error(
+            `Kafka low watermark is unavailable for ${assignment.topic}/${assignment.partition}`,
+          );
+        const expected = await this.checkpointStore.ensureAtLowWatermark(
+          assignment.topic,
+          assignment.partition,
+          BigInt(low),
+        );
+        expectedOffsets.set(
+          `${assignment.topic}/${assignment.partition}`,
+          expected,
+        );
+        consumer.seek({
+          topic: assignment.topic,
+          partition: assignment.partition,
+          offset: expected.toString(),
+        });
+      }
+    };
     await consumer.run({
       eachMessage: async ({ topic, partition, message, pause }) => {
+        await assigned;
         if (message.key === null || message.value === null) {
           pause();
           throw new Error("Kafka event record requires a key and value");
@@ -80,23 +123,9 @@ export class KafkaProjectionRunner {
           headers,
           value: message.value,
         };
-        const offsets = await admin.fetchTopicOffsets(topic, {
-          isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
-        });
-        const lowWatermark = offsets.find(
-          (offset) => offset.partition === partition,
-        )?.low;
-        if (lowWatermark === undefined) {
-          pause();
-          throw new Error(
-            `Kafka low watermark is unavailable for ${topic}/${partition}`,
-          );
-        }
-        const expected = await this.checkpointStore.ensureAtLowWatermark(
-          topic,
-          partition,
-          BigInt(lowWatermark),
-        );
+        const expected = expectedOffsets.get(`${topic}/${partition}`);
+        if (expected === undefined)
+          throw new Error(`partition ${topic}/${partition} was not assigned`);
         if (record.offset !== expected) {
           consumer.seek({ topic, partition, offset: expected.toString() });
           return;
@@ -119,6 +148,10 @@ export class KafkaProjectionRunner {
                   offset: (BigInt(message.offset) + 1n).toString(),
                 },
               ]);
+              expectedOffsets.set(
+                `${topic}/${partition}`,
+                BigInt(message.offset) + 1n,
+              );
               return;
             } catch (commitError) {
               failure = commitError;
@@ -163,6 +196,24 @@ export class KafkaProjectionRunner {
         throw failure;
       },
     });
+    try {
+      const deadline = Date.now() + 30_000;
+      while (consumer.assignment().length === 0) {
+        if (Date.now() >= deadline)
+          throw new Error(
+            "Kafka consumer did not receive a partition assignment",
+          );
+        await wait(20);
+      }
+      await alignAssignment();
+      resolveAssigned();
+    } catch (error) {
+      rejectAssigned(error);
+      await consumer.disconnect().catch(() => undefined);
+      await producer.disconnect().catch(() => undefined);
+      await admin.disconnect().catch(() => undefined);
+      throw error;
+    }
     return consumer;
   }
 }
