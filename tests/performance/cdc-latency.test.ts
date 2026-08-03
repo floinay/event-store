@@ -28,7 +28,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     await stack.stop();
   }, 60_000);
 
-  it("keeps PostgreSQL-commit-to-consumer p50 at or below 50ms", async () => {
+  it("meets the PostgreSQL-commit-to-consumer latency SLO", async () => {
     if (!Number.isInteger(sampleCount) || sampleCount < 100)
       throw new Error(
         "LATENCY_SAMPLE_COUNT must be an integer of at least 100",
@@ -68,11 +68,18 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
             context?: { requestId?: string };
           };
           if (event.context?.requestId === warmupRequestId) warmupObserved();
-          else if (event.context?.requestId !== undefined)
+          else if (
+            event.context?.requestId !== undefined &&
+            committed.has(event.context.requestId)
+          )
             observed.set(event.context.requestId, performance.now());
           if (
             committed.size === sampleCount &&
-            [...committed.keys()].every((requestId) => observed.has(requestId))
+            [...committed.keys()].every(
+              (requestId) =>
+                observed.has(requestId) &&
+                Number.isFinite(committed.get(requestId)),
+            )
           ) {
             clearTimeout(deadline);
             received();
@@ -106,6 +113,8 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     for (let index = 0; index < sampleCount; index += 1) {
       const requestId = uuidv7();
       const aggregateId = uuidv7();
+      // Register before append so a very fast consumer cannot drop the sample.
+      committed.set(requestId, Number.NaN);
       await store.append({
         producerService: "latency-probe",
         namespace: "latency",
@@ -131,7 +140,9 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       committed.set(requestId, performance.now());
       if (
         committed.size === sampleCount &&
-        [...committed.keys()].every((id) => observed.has(id))
+        [...committed.keys()].every(
+          (id) => observed.has(id) && Number.isFinite(committed.get(id)),
+        )
       )
         received();
     }
@@ -146,11 +157,16 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       p95: percentile(samples, 0.95),
       p99: percentile(samples, 0.99),
       p999: percentile(samples, 0.999),
+      mean:
+        samples.reduce((total, sample) => total + sample, 0) / samples.length,
     };
     console.info(`CDC latency metrics: ${JSON.stringify(metrics)}`);
     expect(metrics.samples).toBe(sampleCount);
+    expect(samples.every((sample) => sample >= 0)).toBe(true);
     expect(metrics.p50).toBeLessThanOrEqual(50);
-    expect(metrics.p95).toBeGreaterThanOrEqual(metrics.p50);
+    expect(metrics.mean).toBeLessThanOrEqual(80);
+    expect(metrics.p95).toBeLessThanOrEqual(100);
+    expect(metrics.p999).toBeLessThanOrEqual(200);
     expect(metrics.p99).toBeGreaterThanOrEqual(metrics.p95);
     expect(metrics.p999).toBeGreaterThanOrEqual(metrics.p99);
   }, 180_000);
