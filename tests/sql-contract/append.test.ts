@@ -63,4 +63,11 @@ suite("append SQL contract", () => {
       ),
     ).toEqual(["1", "2"]);
   });
+
+  it("owns SECURITY DEFINER functions by event_store_owner", async () => {
+    const owner = await pool.query<{ owner: string }>(
+      "SELECT pg_get_userbyid(proowner) AS owner FROM pg_proc WHERE pronamespace='event_store'::regnamespace AND proname='append_v1'",
+    );
+    expect(owner.rows[0]?.owner).toBe("event_store_owner");
+  });
 });
