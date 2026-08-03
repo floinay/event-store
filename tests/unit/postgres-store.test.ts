@@ -63,18 +63,25 @@ describe("PostgresEventStore append retries", () => {
       code: "40P01",
     });
     const fake = poolThatFails(error, 2);
-    await expect(new PostgresEventStore(fake.pool).append(input())).resolves.toMatchObject({
+    await expect(
+      new PostgresEventStore(fake.pool).append(input()),
+    ).resolves.toMatchObject({
       currentRevision: "1",
     });
     expect(fake.appendCalls()).toBe(3);
   });
 
   it("does not retry an optimistic-concurrency conflict", async () => {
-    const error = Object.assign(new Error("expected revision 3, actual revision 4"), {
-      code: "40001",
-    });
+    const error = Object.assign(
+      new Error("expected revision 3, actual revision 4"),
+      {
+        code: "40001",
+      },
+    );
     const fake = poolThatFails(error, 1);
-    await expect(new PostgresEventStore(fake.pool).append(input())).rejects.toBe(error);
+    await expect(
+      new PostgresEventStore(fake.pool).append(input()),
+    ).rejects.toBe(error);
     expect(fake.appendCalls()).toBe(1);
   });
 });

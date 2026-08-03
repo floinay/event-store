@@ -31,7 +31,9 @@ export async function migrate(
         "GRANT CONNECT ON DATABASE event_store TO event_store_owner",
       );
     if (includeClusterMigration)
-      await client.query("ALTER DATABASE event_store OWNER TO event_store_owner");
+      await client.query(
+        "ALTER DATABASE event_store OWNER TO event_store_owner",
+      );
     await client.query("SET ROLE event_store_owner");
     const first = files.find((file) => file !== "001_roles.sql");
     if (first === undefined) throw new Error("no database migrations found");

@@ -32,5 +32,7 @@ export function toKafkaEnvelopeRecord(input: unknown): KafkaEnvelopeRecord {
 }
 
 export function parseKafkaEnvelope(value: Buffer | string): StoredEvent {
-  return StoredEventSchema.parse(normalizeStoredEvent(JSON.parse(value.toString())));
+  return StoredEventSchema.parse(
+    normalizeStoredEvent(JSON.parse(value.toString())),
+  );
 }
