@@ -102,17 +102,17 @@ export function errorFrom(
     ].includes(sqlCode ?? "")
   )
     [code, machineCode] = [grpc.status.UNAVAILABLE, "database_unavailable"];
-  const result = Object.assign(
-    new Error(
-      JSON.stringify({
-        code: machineCode,
-        requestId,
-        retriable: code === grpc.status.UNAVAILABLE,
-      }),
-    ),
-    { code },
-  ) as grpc.ServiceError;
-  result.details = message;
+  const actualRevision = /actual revision (\d+)/.exec(message)?.[1];
+  const detail = {
+    code: machineCode,
+    requestId,
+    retriable: code === grpc.status.UNAVAILABLE,
+    ...(actualRevision === undefined ? {} : { actualRevision }),
+  };
+  const result = Object.assign(new Error(JSON.stringify(detail)), {
+    code,
+  }) as grpc.ServiceError;
+  result.details = JSON.stringify(detail);
   return result;
 }
 
