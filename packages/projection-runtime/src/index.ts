@@ -23,12 +23,16 @@ export type ProjectionHandler = (
   client: PoolClient,
   event: StoredEvent,
 ) => Promise<void>;
+export type ProjectionEventTransformer = (event: StoredEvent) => StoredEvent;
 
 export class ProjectionGapError extends Error {
   readonly code = "event_gap";
 }
 export class ProjectionIntegrityError extends Error {
   readonly code = "event_integrity";
+}
+export class ProjectionRetentionError extends Error {
+  readonly code = "projection_rebuild_required";
 }
 
 export const projectionRetryDelaysMs = [
@@ -75,11 +79,59 @@ export class ProjectionFailureReporter {
   }
 }
 
+export class ProjectionCheckpointStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly identity: ProjectionIdentity,
+  ) {}
+
+  async nextOffset(
+    topic: string,
+    partition: number,
+  ): Promise<bigint | undefined> {
+    const result = await this.pool.query<{ next_offset: string }>(
+      "SELECT next_offset FROM projection_runtime.checkpoints WHERE projection_name=$1 AND generation_id=$2 AND topic_name=$3 AND partition_no=$4",
+      [this.identity.name, this.identity.generationId, topic, partition],
+    );
+    return result.rows[0] === undefined
+      ? undefined
+      : BigInt(result.rows[0].next_offset);
+  }
+
+  async ensureAtLowWatermark(
+    topic: string,
+    partition: number,
+    lowWatermark: bigint,
+  ): Promise<bigint> {
+    const existing = await this.nextOffset(topic, partition);
+    if (existing !== undefined) {
+      if (existing < lowWatermark)
+        throw new ProjectionRetentionError(
+          `checkpoint ${existing} is below Kafka low watermark ${lowWatermark}`,
+        );
+      return existing;
+    }
+    await this.pool.query(
+      `INSERT INTO projection_runtime.checkpoints(projection_name,generation_id,topic_name,partition_no,next_offset,updated_at)
+       VALUES ($1,$2,$3,$4,$5,clock_timestamp()) ON CONFLICT DO NOTHING`,
+      [
+        this.identity.name,
+        this.identity.generationId,
+        topic,
+        partition,
+        lowWatermark.toString(),
+      ],
+    );
+    return (await this.nextOffset(topic, partition)) ?? lowWatermark;
+  }
+}
+
 /** Commits model mutation, inbox marker and checkpoint in one database transaction. */
 export class ProjectionTransactionRunner {
   constructor(
     private readonly pool: Pool,
     private readonly identity: ProjectionIdentity,
+    private readonly transform: ProjectionEventTransformer,
   ) {}
 
   async process(
@@ -87,7 +139,9 @@ export class ProjectionTransactionRunner {
     apply: ProjectionHandler,
   ): Promise<"processed" | "duplicate"> {
     const wireValue = record.value.toString();
-    const event = StoredEventSchema.parse(JSON.parse(wireValue));
+    const event = this.transform(
+      StoredEventSchema.parse(JSON.parse(wireValue)),
+    );
     const hash = record.headers.envelopeHash;
     if (hash === undefined || !/^[0-9a-f]{64}$/.test(hash))
       throw new ProjectionIntegrityError("missing or invalid envelopeHash");

@@ -1,5 +1,6 @@
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import type {
+  ProjectionCheckpointStore,
   ProjectionFailureReporter,
   ProjectionHandler,
   ProjectionTransactionRunner,
@@ -18,7 +19,8 @@ export class KafkaProjectionRunner {
     private readonly config: KafkaProjectionConfig,
     private readonly transactionRunner: ProjectionTransactionRunner,
     private readonly apply: ProjectionHandler,
-    private readonly failureReporter?: ProjectionFailureReporter,
+    private readonly checkpointStore: ProjectionCheckpointStore,
+    private readonly failureReporter: ProjectionFailureReporter,
     private readonly dlqTopic = "event-store.projection-dlq.v1",
   ) {}
 
@@ -42,7 +44,9 @@ export class KafkaProjectionRunner {
     const producer = kafka.producer({
       kafkaJS: { idempotent: true, acks: -1 },
     });
+    const admin = kafka.admin();
     await producer.connect();
+    await admin.connect();
     await consumer.connect();
     await consumer.subscribe({ topics: [this.config.topic], replace: true });
     await consumer.run({
@@ -65,6 +69,27 @@ export class KafkaProjectionRunner {
           headers,
           value: message.value,
         };
+        const offsets = await admin.fetchTopicOffsets(topic, {
+          isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
+        });
+        const lowWatermark = offsets.find(
+          (offset) => offset.partition === partition,
+        )?.low;
+        if (lowWatermark === undefined) {
+          pause();
+          throw new Error(
+            `Kafka low watermark is unavailable for ${topic}/${partition}`,
+          );
+        }
+        const expected = await this.checkpointStore.ensureAtLowWatermark(
+          topic,
+          partition,
+          BigInt(lowWatermark),
+        );
+        if (record.offset !== expected) {
+          consumer.seek({ topic, partition, offset: expected.toString() });
+          return;
+        }
         let failure: unknown;
         for (const delay of projectionRetryDelaysMs) {
           try {
@@ -82,34 +107,36 @@ export class KafkaProjectionRunner {
             await new Promise((resolve) => setTimeout(resolve, delay));
           }
         }
-        const event = JSON.parse(message.value.toString()) as {
-          eventId: string;
-        };
-        if (this.failureReporter !== undefined)
+        try {
+          const event = JSON.parse(message.value.toString()) as never;
           await this.failureReporter.record(
             record,
-            event as never,
+            event,
             failure,
             projectionRetryDelaysMs.length,
           );
-        await producer.send({
-          topic: this.dlqTopic,
-          messages: [
-            {
-              key: `${this.config.groupId}|${topic}|${partition}|${message.offset}`,
-              value: JSON.stringify({
-                projection: this.config.groupId,
-                topic,
-                partition,
-                offset: message.offset,
-                error:
-                  failure instanceof Error ? failure.message : String(failure),
-                envelope: event,
-              }),
-            },
-          ],
-        });
-        pause();
+          await producer.send({
+            topic: this.dlqTopic,
+            messages: [
+              {
+                key: `${this.config.groupId}|${topic}|${partition}|${message.offset}`,
+                value: JSON.stringify({
+                  projection: this.config.groupId,
+                  topic,
+                  partition,
+                  offset: message.offset,
+                  error:
+                    failure instanceof Error
+                      ? failure.message
+                      : String(failure),
+                  envelope: event,
+                }),
+              },
+            ],
+          });
+        } finally {
+          pause();
+        }
         throw failure;
       },
     });
