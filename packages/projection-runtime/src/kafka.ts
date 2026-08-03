@@ -125,6 +125,12 @@ export class KafkaProjectionRunner {
         };
         if (expectedOffsets.get(`${topic}/${partition}`) === undefined)
           await alignAssignment();
+        const persistedOffset = await this.checkpointStore.nextOffset(
+          topic,
+          partition,
+        );
+        if (persistedOffset !== undefined)
+          expectedOffsets.set(`${topic}/${partition}`, persistedOffset);
         const expected = expectedOffsets.get(`${topic}/${partition}`);
         if (expected === undefined)
           throw new Error(`partition ${topic}/${partition} was not assigned`);
