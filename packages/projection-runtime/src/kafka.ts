@@ -32,6 +32,9 @@ export class KafkaProjectionRunner {
       kafkaJS: {
         groupId: this.config.groupId,
         autoCommit: false,
+        // A new projection group must see retained records before its first
+        // checkpoint is established; checkpoint seeks handle later restarts.
+        fromBeginning: true,
         readUncommitted: false,
         allowAutoTopicCreation: false,
         minBytes: 1,
