@@ -103,7 +103,7 @@ export async function appendReplayBarriers(
       },
       events: [
         {
-          eventName: "system.replay-barrier",
+          eventName: "system.replaybarrier",
           schemaVersion: 1,
           occurredAt: new Date().toISOString(),
           payload: { replayId, partition },
