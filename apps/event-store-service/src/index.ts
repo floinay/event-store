@@ -209,7 +209,13 @@ export async function startServer(): Promise<grpc.Server> {
           acknowledged_at: new Date().toISOString(),
         });
       } catch (error) {
-        callback(errorFrom(error, call.request.request_id, true));
+        callback(
+          errorFrom(
+            error,
+            call.request.request_id,
+            (error as { appendDispatched?: unknown }).appendDispatched === true,
+          ),
+        );
       }
     },
     GetStreamHead: async (

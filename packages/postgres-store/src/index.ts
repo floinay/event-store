@@ -81,20 +81,30 @@ export class PostgresEventStore {
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await this.withSession(async (client) => {
-          const result = await client.query<{ append_v1: AppendResult }>(
-            `SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)`,
-            [
-              input.producerService,
-              input.namespace,
-              input.aggregateType,
-              input.aggregateId,
-              input.requestId,
-              input.expectedRevision.kind,
-              expected,
-              JSON.stringify(events),
-              JSON.stringify(context),
-            ],
-          );
+          let result: { rows: { append_v1: AppendResult }[] };
+          try {
+            result = await client.query<{ append_v1: AppendResult }>(
+              `SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)`,
+              [
+                input.producerService,
+                input.namespace,
+                input.aggregateType,
+                input.aggregateId,
+                input.requestId,
+                input.expectedRevision.kind,
+                expected,
+                JSON.stringify(events),
+                JSON.stringify(context),
+              ],
+            );
+          } catch (error) {
+            throw Object.assign(
+              error instanceof Error ? error : new Error(String(error)),
+              {
+                appendDispatched: true,
+              },
+            );
+          }
           const value = result.rows[0]?.append_v1;
           if (value === undefined) throw new Error("append returned no result");
           return value;

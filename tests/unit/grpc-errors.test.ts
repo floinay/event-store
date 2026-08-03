@@ -23,6 +23,18 @@ describe("gRPC error mapping", () => {
     });
   });
 
+  it("maps a connection failure before dispatch to UNAVAILABLE", () => {
+    const error = errorFrom(
+      Object.assign(new Error("connection refused"), { code: "08006" }),
+      "019fc9c9-84d4-754c-ba77-8a8a9d9c586a",
+    );
+    expect(error.code).toBe(grpc.status.UNAVAILABLE);
+    expect(JSON.parse(error.details)).toMatchObject({
+      code: "database_unavailable",
+      retriable: true,
+    });
+  });
+
   it("includes the current revision in an optimistic conflict detail", () => {
     const error = errorFrom(
       Object.assign(new Error("expected revision 3, actual revision 4"), {
