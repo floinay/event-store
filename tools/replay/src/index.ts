@@ -158,6 +158,25 @@ export class ReplayCoordinator {
   ): Promise<void> {
     if (!Number.isInteger(partition) || partition < 0 || partition >= 24)
       throw new RangeError("replay barrier partition must be 0..23");
+    const event = await this.pool.query<{
+      partition_key: string;
+      event_envelope: { eventName?: string; payload?: unknown };
+    }>(
+      "SELECT partition_key,event_envelope FROM event_store.events WHERE event_id=$1",
+      [eventId],
+    );
+    const row = event.rows[0];
+    const payload = row?.event_envelope.payload as
+      | { replayId?: unknown; partition?: unknown }
+      | undefined;
+    if (
+      row === undefined ||
+      row.event_envelope.eventName !== "system.replaybarrier" ||
+      payload?.replayId !== identity.replayId ||
+      payload.partition !== partition ||
+      kafkaDefaultPartition(row.partition_key) !== partition
+    )
+      throw new Error("replay barrier does not match its canonical event");
     await this.pool.query(
       `INSERT INTO projection_runtime.replay_barriers(projection_name,generation_id,partition_no,event_id,processed_at)
        VALUES ($1,$2,$3,$4,clock_timestamp()) ON CONFLICT DO NOTHING`,

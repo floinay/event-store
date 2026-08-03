@@ -23,7 +23,7 @@ suite("replay coordinator", () => {
     await stack.stop();
   }, 60_000);
 
-  it("activates only a barrier-complete, checksum-matching generation", async () => {
+  it("activates only consumer-verified, checksum-matching barriers", async () => {
     const identity = {
       projectionName: "orders",
       generationId: uuidv7(),
@@ -38,8 +38,16 @@ suite("replay coordinator", () => {
         actualChecksum: "same",
       }),
     ).rejects.toThrow("all 24 replay barriers");
-    for (let partition = 0; partition < 24; partition += 1)
-      await coordinator.recordBarrier(identity, partition, uuidv7());
+    const barriers = await appendReplayBarriers(
+      new PostgresEventStore(pool),
+      identity.replayId,
+    );
+    for (const barrier of barriers)
+      await coordinator.recordBarrier(
+        identity,
+        barrier.partition,
+        barrier.eventId,
+      );
     await coordinator.activate(identity, {
       kafkaLag: 0n,
       expectedChecksum: "same",
