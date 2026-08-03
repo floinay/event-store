@@ -1,0 +1,17 @@
+{
+  "name": "@event-store/benchmark",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "types": "./src/index.ts",
+    "default": "./dist/index.js"
+  },
+  "dependencies": {
+    "@event-store/contracts": "*",
+    "@event-store/postgres-store": "*",
+    "pg": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.15.6"
+  }
+}

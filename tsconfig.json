@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/contracts" },
+    { "path": "packages/aggregate-sdk" },
+    { "path": "packages/upcasting" },
+    { "path": "packages/kafka-envelope" },
+    { "path": "packages/postgres-store" },
+    { "path": "packages/projection-runtime" },
+    { "path": "apps/event-store-service" },
+    { "path": "tools/migrate" },
+    { "path": "tools/reconcile" },
+    { "path": "tools/pitr-verify" },
+    { "path": "tools/replay" },
+    { "path": "tools/benchmark" }
+  ]
+}

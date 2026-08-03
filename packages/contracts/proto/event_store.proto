@@ -1,0 +1,29 @@
+syntax = "proto3";
+package eventstore.v1;
+
+import "google/protobuf/empty.proto";
+
+service EventStoreService {
+  rpc AppendToStream(AppendToStreamRequest) returns (AppendToStreamResponse);
+  rpc GetStreamHead(GetStreamHeadRequest) returns (GetStreamHeadResponse);
+  rpc ReadStream(ReadStreamRequest) returns (stream StoredEvent);
+  rpc LoadAggregate(LoadAggregateRequest) returns (stream LoadAggregateFrame);
+  rpc PutSnapshot(PutSnapshotRequest) returns (PutSnapshotResponse);
+}
+
+message ExpectedRevision { oneof value { google.protobuf.Empty no_stream = 1; string exact_revision = 2; } }
+message EventDraft { string event_name = 1; uint32 schema_version = 2; string occurred_at = 3; bytes payload_json = 4; }
+message AppendContext { string correlation_id = 1; optional string causation_id = 2; bytes actor_json = 3; optional string traceparent = 4; }
+message AppendToStreamRequest { string request_id = 1; string namespace = 2; string aggregate_type = 3; string aggregate_id = 4; ExpectedRevision expected_revision = 5; repeated EventDraft events = 6; AppendContext context = 7; }
+message AppendedEvent { string event_id = 1; string stream_revision = 2; string event_number = 3; }
+message AppendToStreamResponse { string request_id = 1; string previous_revision = 2; string current_revision = 3; string recorded_at = 4; string acknowledged_at = 5; repeated AppendedEvent events = 6; }
+message GetStreamHeadRequest { string namespace = 1; string aggregate_type = 2; string aggregate_id = 3; }
+message GetStreamHeadResponse { string current_revision = 1; }
+message ReadStreamRequest { string namespace = 1; string aggregate_type = 2; string aggregate_id = 3; string from_revision = 4; }
+message StoredEvent { bytes envelope_json = 1; }
+message LoadAggregateRequest { string namespace = 1; string aggregate_type = 2; string aggregate_id = 3; string reducer_version = 4; }
+message Snapshot { string snapshot_revision = 1; string reducer_version = 2; uint32 state_schema_version = 3; bytes state_json = 4; bytes state_sha256 = 5; }
+message LoadAggregateInfo { string head_revision = 1; }
+message LoadAggregateFrame { oneof value { LoadAggregateInfo info = 1; Snapshot snapshot = 2; StoredEvent event = 3; } }
+message PutSnapshotRequest { string namespace = 1; string aggregate_type = 2; string aggregate_id = 3; Snapshot snapshot = 4; }
+message PutSnapshotResponse {}

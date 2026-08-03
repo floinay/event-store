@@ -1,0 +1,7 @@
+version: v2
+modules:
+  - path: packages/contracts/proto
+lint:
+  use: [STANDARD]
+breaking:
+  use: [FILE]

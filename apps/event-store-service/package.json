@@ -1,0 +1,18 @@
+{
+  "name": "@event-store/service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@event-store/contracts": "*",
+    "@event-store/postgres-store": "*",
+    "@grpc/grpc-js": "1.14.4",
+    "@grpc/proto-loader": "0.8.0",
+    "pg": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.15.6"
+  }
+}
