@@ -1,3 +1,24 @@
+CREATE OR REPLACE FUNCTION event_store.canonical_jsonb(p_value jsonb)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+SET search_path = pg_catalog
+AS $$
+  SELECT CASE jsonb_typeof($1)
+    WHEN 'object' THEN COALESCE((
+      SELECT '{' || string_agg(to_json(key)::text || ':' || event_store.canonical_jsonb($1 -> key), ',' ORDER BY key COLLATE "C") || '}'
+      FROM jsonb_object_keys($1) AS keys(key)
+    ), '{}')
+    WHEN 'array' THEN COALESCE((
+      SELECT '[' || string_agg(event_store.canonical_jsonb(value), ',' ORDER BY ordinal) || ']'
+      FROM jsonb_array_elements($1) WITH ORDINALITY AS entries(value, ordinal)
+    ), '[]')
+    ELSE $1::text
+  END
+$$;
+
 CREATE OR REPLACE FUNCTION event_store.append_v1(
   p_producer_service text, p_namespace text, p_aggregate_type text, p_aggregate_id uuid,
   p_request_id uuid, p_expected_kind text, p_expected_revision bigint, p_events jsonb, p_context jsonb
@@ -13,7 +34,10 @@ BEGIN
   IF p_expected_kind NOT IN ('no_stream', 'exact') THEN RAISE EXCEPTION 'invalid expected revision kind' USING ERRCODE = '22023'; END IF;
   IF p_expected_kind = 'exact' AND (p_expected_revision IS NULL OR p_expected_revision < 0) THEN RAISE EXCEPTION 'expected revision is required' USING ERRCODE = '22023'; END IF;
   IF jsonb_typeof(p_events) <> 'array' OR jsonb_array_length(p_events) NOT BETWEEN 1 AND 100 THEN RAISE EXCEPTION 'events count must be 1..100' USING ERRCODE = '22023'; END IF;
-  IF jsonb_typeof(p_context) <> 'object' THEN RAISE EXCEPTION 'context must be an object' USING ERRCODE = '22023'; END IF;
+  IF jsonb_typeof(p_context) <> 'object' OR p_context->>'correlationId' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    OR (p_context ? 'causationId' AND p_context->>'causationId' IS NOT NULL AND p_context->>'causationId' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+    OR p_context->'actor'->>'kind' NOT IN ('user', 'service', 'system') OR coalesce(p_context->'actor'->>'subjectRef', '') = ''
+  THEN RAISE EXCEPTION 'invalid event context' USING ERRCODE = '22023'; END IF;
   IF octet_length(p_events::text) + octet_length(p_context::text) > 1048576 THEN RAISE EXCEPTION 'append payload exceeds 1 MiB' USING ERRCODE = '22001'; END IF;
 
   v_request_hash := digest(jsonb_build_object(
@@ -51,9 +75,9 @@ BEGIN
       'aggregateId', p_aggregate_id::text, 'streamRevision', v_revision::text, 'eventNumber', v_event_number::text,
       'eventName', v_draft->>'eventName', 'schemaVersion', (v_draft->>'schemaVersion')::integer,
       'occurredAt', v_draft->>'occurredAt', 'recordedAt', v_recorded_text, 'producerService', p_producer_service,
-      'context', p_context || jsonb_build_object('requestId', p_request_id::text), 'payload', v_draft->'payload'
+      'context', jsonb_strip_nulls(p_context || jsonb_build_object('requestId', p_request_id::text)), 'payload', v_draft->'payload'
     );
-    v_envelope_hash := encode(digest(v_envelope::text, 'sha256'), 'hex');
+    v_envelope_hash := encode(digest(event_store.canonical_jsonb(v_envelope), 'sha256'), 'hex');
     INSERT INTO event_store.events(event_number,event_id,namespace,aggregate_type,aggregate_id,stream_revision,request_id,request_event_no,event_name,schema_version,occurred_at,recorded_at,producer_service,topic_route,partition_key,event_envelope,envelope_sha256)
     VALUES (v_event_number,v_event_id,p_namespace,p_aggregate_type,p_aggregate_id,v_revision,p_request_id,v_ord,v_draft->>'eventName',(v_draft->>'schemaVersion')::integer,v_occurred_at,v_recorded_at,p_producer_service,'event-store',p_namespace || '|' || p_aggregate_type || '|' || p_aggregate_id::text,v_envelope,v_envelope_hash);
     v_response_events := v_response_events || jsonb_build_array(jsonb_build_object('eventId', v_event_id::text, 'streamRevision', v_revision::text, 'eventNumber', v_event_number::text));

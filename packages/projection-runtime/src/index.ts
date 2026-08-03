@@ -4,7 +4,6 @@ import { z } from "zod";
 import { UpcasterRegistry } from "@event-store/upcasting";
 import {
   canonicalJson,
-  normalizeStoredEvent,
   partitionKey,
   StoredEventSchema,
   type StoredEvent,
@@ -205,16 +204,14 @@ export class ProjectionTransactionRunner {
     apply: ProjectionHandler,
   ): Promise<"processed" | "duplicate"> {
     const wireValue = record.value.toString();
-    const normalizedEnvelope = normalizeStoredEvent(JSON.parse(wireValue));
-    const event = this.transform(StoredEventSchema.parse(normalizedEnvelope));
+    const envelope = JSON.parse(wireValue);
+    const event = this.transform(StoredEventSchema.parse(envelope));
     const hash = record.headers.envelopeHash;
     if (hash === undefined || !/^[0-9a-f]{64}$/.test(hash))
       throw new ProjectionIntegrityError("missing or invalid envelopeHash");
     if (
       hash !==
-      createHash("sha256")
-        .update(canonicalJson(normalizedEnvelope))
-        .digest("hex")
+      createHash("sha256").update(canonicalJson(envelope)).digest("hex")
     )
       throw new ProjectionIntegrityError("envelopeHash does not match value");
     if (
