@@ -24,7 +24,7 @@ suite("gRPC to CDC", () => {
   let server: grpc.Server;
   let client: AppendClient;
   beforeAll(async () => {
-    await stack.start({ cdc: true });
+    await stack.start({ cdc: true, toxiproxy: true });
     process.env.DATABASE_URL = stack.databaseUrl;
     process.env.PRODUCER_SERVICE = "orders-command";
     process.env.GRPC_LISTEN_ADDRESS = "127.0.0.1:50061";
@@ -97,6 +97,7 @@ suite("gRPC to CDC", () => {
         },
       });
     });
+    await stack.setPostgresConnectEnabled(false);
     const response = await new Promise<Record<string, unknown>>(
       (resolve, reject) => {
         client.AppendToStream(
@@ -127,6 +128,7 @@ suite("gRPC to CDC", () => {
       },
     );
     expect(response).toBeDefined();
+    await stack.setPostgresConnectEnabled(true);
     await expect(received).resolves.toMatchObject({
       aggregateId,
       eventName: "order.created",
