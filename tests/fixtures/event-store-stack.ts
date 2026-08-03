@@ -1,4 +1,8 @@
 import { GenericContainer, Network, Wait } from "testcontainers";
+import {
+  ToxiProxyContainer,
+  type CreatedProxy,
+} from "@testcontainers/toxiproxy";
 import { Pool } from "pg";
 import { migrate } from "@event-store/migrate";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
@@ -8,6 +12,8 @@ export class EventStoreStack {
   #postgres?: Awaited<ReturnType<GenericContainer["start"]>>;
   #kafka?: Awaited<ReturnType<GenericContainer["start"]>>;
   #connect?: Awaited<ReturnType<GenericContainer["start"]>>;
+  #toxiproxy?: Awaited<ReturnType<ToxiProxyContainer["start"]>>;
+  #postgresConnectProxy?: CreatedProxy;
 
   get databaseUrl(): string {
     if (this.#postgres === undefined) throw new Error("stack is not started");
@@ -19,7 +25,9 @@ export class EventStoreStack {
     return `http://${this.#connect.getHost()}:${this.#connect.getMappedPort(8083)}`;
   }
 
-  async start(options: { cdc?: boolean } = {}): Promise<void> {
+  async start(
+    options: { cdc?: boolean; toxiproxy?: boolean } = {},
+  ): Promise<void> {
     this.#network = await new Network().start();
     this.#postgres = await new GenericContainer("postgres:18.4-bookworm")
       .withEnvironment({
@@ -52,6 +60,18 @@ export class EventStoreStack {
       .start();
     await migrate(this.databaseUrl, true);
     if (options.cdc !== true) return;
+    if (options.toxiproxy === true) {
+      this.#toxiproxy = await new ToxiProxyContainer(
+        "ghcr.io/shopify/toxiproxy:2.12.0",
+      )
+        .withNetwork(this.#network)
+        .withNetworkAliases("toxiproxy")
+        .start();
+      this.#postgresConnectProxy = await this.#toxiproxy.createProxy({
+        name: "postgres-connect",
+        upstream: "postgres:5432",
+      });
+    }
     const database = new Pool({ connectionString: this.databaseUrl });
     await database.query("ALTER ROLE event_store_cdc PASSWORD 'cdc'");
     await database.query(
@@ -136,10 +156,10 @@ export class EventStoreStack {
       .withExposedPorts(8083)
       .withWaitStrategy(Wait.forHttp("/connector-plugins", 8083))
       .start();
-    await this.createConnector();
+    await this.createConnector(options.toxiproxy === true);
   }
 
-  async createConnector(): Promise<void> {
+  async createConnector(viaToxiproxy = false): Promise<void> {
     const response = await fetch(
       `${this.connectUrl}/connectors/event-store-live/config`,
       {
@@ -149,8 +169,8 @@ export class EventStoreStack {
           "connector.class":
             "io.debezium.connector.postgresql.PostgresConnector",
           "tasks.max": "1",
-          "database.hostname": "postgres",
-          "database.port": "5432",
+          "database.hostname": viaToxiproxy ? "toxiproxy" : "postgres",
+          "database.port": viaToxiproxy ? "8666" : "5432",
           "database.user": "event_store_cdc",
           "database.password": "cdc",
           "database.dbname": "event_store",
@@ -238,6 +258,12 @@ export class EventStoreStack {
     }
   }
 
+  async setPostgresConnectEnabled(enabled: boolean): Promise<void> {
+    if (this.#postgresConnectProxy === undefined)
+      throw new Error("Postgres-to-Connect Toxiproxy is not configured");
+    await this.#postgresConnectProxy.setEnabled(enabled);
+  }
+
   async pool(): Promise<Pool> {
     return new Pool({ connectionString: this.databaseUrl });
   }
@@ -245,6 +271,7 @@ export class EventStoreStack {
   async stop(): Promise<void> {
     await this.#connect?.stop();
     await this.#kafka?.stop();
+    await this.#toxiproxy?.stop();
     await this.#postgres?.stop();
     await this.#network?.stop();
   }
