@@ -1,3 +1,24 @@
+CREATE OR REPLACE FUNCTION event_store.canonical_jsonb(p_value jsonb)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+SET search_path = pg_catalog
+AS $$
+  SELECT CASE jsonb_typeof($1)
+    WHEN 'object' THEN COALESCE((
+      SELECT '{' || string_agg(to_json(key)::text || ':' || event_store.canonical_jsonb($1 -> key), ',' ORDER BY key COLLATE "C") || '}'
+      FROM jsonb_object_keys($1) AS keys(key)
+    ), '{}')
+    WHEN 'array' THEN COALESCE((
+      SELECT '[' || string_agg(event_store.canonical_jsonb(value), ',' ORDER BY ordinal) || ']'
+      FROM jsonb_array_elements($1) WITH ORDINALITY AS entries(value, ordinal)
+    ), '[]')
+    ELSE $1::text
+  END
+$$;
+
 CREATE OR REPLACE FUNCTION event_store.append_v1(
   p_producer_service text, p_namespace text, p_aggregate_type text, p_aggregate_id uuid,
   p_request_id uuid, p_expected_kind text, p_expected_revision bigint, p_events jsonb, p_context jsonb
@@ -53,7 +74,7 @@ BEGIN
       'occurredAt', v_draft->>'occurredAt', 'recordedAt', v_recorded_text, 'producerService', p_producer_service,
       'context', p_context || jsonb_build_object('requestId', p_request_id::text), 'payload', v_draft->'payload'
     );
-    v_envelope_hash := encode(digest(v_envelope::text, 'sha256'), 'hex');
+    v_envelope_hash := encode(digest(event_store.canonical_jsonb(v_envelope), 'sha256'), 'hex');
     INSERT INTO event_store.events(event_number,event_id,namespace,aggregate_type,aggregate_id,stream_revision,request_id,request_event_no,event_name,schema_version,occurred_at,recorded_at,producer_service,topic_route,partition_key,event_envelope,envelope_sha256)
     VALUES (v_event_number,v_event_id,p_namespace,p_aggregate_type,p_aggregate_id,v_revision,p_request_id,v_ord,v_draft->>'eventName',(v_draft->>'schemaVersion')::integer,v_occurred_at,v_recorded_at,p_producer_service,'event-store',p_namespace || '|' || p_aggregate_type || '|' || p_aggregate_id::text,v_envelope,v_envelope_hash);
     v_response_events := v_response_events || jsonb_build_array(jsonb_build_object('eventId', v_event_id::text, 'streamRevision', v_revision::text, 'eventNumber', v_event_number::text));

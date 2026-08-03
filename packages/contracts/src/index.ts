@@ -51,6 +51,26 @@ export type StoredEvent = z.infer<typeof StoredEventSchema>;
 export type EventDraft = z.infer<typeof EventDraftSchema>;
 export type EventContext = z.infer<typeof EventContextSchema>;
 
+/**
+ * Debezium's JSON converter omits null fields from an outbox struct. Restore
+ * required nullable fields before validating or hashing the logical envelope.
+ */
+export function normalizeStoredEvent(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return value;
+  const event = value as Record<string, unknown>;
+  if (
+    event.context === null ||
+    typeof event.context !== "object" ||
+    Array.isArray(event.context)
+  )
+    return event;
+  const context = event.context as Record<string, unknown>;
+  return "causationId" in context
+    ? event
+    : { ...event, context: { ...context, causationId: null } };
+}
+
 export function partitionKey(
   event: Pick<StoredEvent, "namespace" | "aggregateType" | "aggregateId">,
 ): string {

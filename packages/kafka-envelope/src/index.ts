@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import {
+  canonicalJson,
+  normalizeStoredEvent,
   partitionKey,
   StoredEventSchema,
   type StoredEvent,
@@ -13,7 +15,7 @@ export interface KafkaEnvelopeRecord {
 
 export function toKafkaEnvelopeRecord(input: unknown): KafkaEnvelopeRecord {
   const event = StoredEventSchema.parse(input);
-  const value = JSON.stringify(event);
+  const value = canonicalJson(event);
   const envelopeHash = createHash("sha256").update(value).digest("hex");
   return {
     key: partitionKey(event),
@@ -30,5 +32,5 @@ export function toKafkaEnvelopeRecord(input: unknown): KafkaEnvelopeRecord {
 }
 
 export function parseKafkaEnvelope(value: Buffer | string): StoredEvent {
-  return StoredEventSchema.parse(JSON.parse(value.toString()));
+  return StoredEventSchema.parse(normalizeStoredEvent(JSON.parse(value.toString())));
 }

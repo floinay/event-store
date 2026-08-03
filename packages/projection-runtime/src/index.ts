@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import {
+  canonicalJson,
+  normalizeStoredEvent,
   partitionKey,
   StoredEventSchema,
   type StoredEvent,
@@ -139,13 +141,17 @@ export class ProjectionTransactionRunner {
     apply: ProjectionHandler,
   ): Promise<"processed" | "duplicate"> {
     const wireValue = record.value.toString();
-    const event = this.transform(
-      StoredEventSchema.parse(JSON.parse(wireValue)),
-    );
+    const normalizedEnvelope = normalizeStoredEvent(JSON.parse(wireValue));
+    const event = this.transform(StoredEventSchema.parse(normalizedEnvelope));
     const hash = record.headers.envelopeHash;
     if (hash === undefined || !/^[0-9a-f]{64}$/.test(hash))
       throw new ProjectionIntegrityError("missing or invalid envelopeHash");
-    if (hash !== createHash("sha256").update(wireValue).digest("hex"))
+    if (
+      hash !==
+      createHash("sha256")
+        .update(canonicalJson(normalizedEnvelope))
+        .digest("hex")
+    )
       throw new ProjectionIntegrityError("envelopeHash does not match value");
     if (
       record.headers.id !== event.eventId ||

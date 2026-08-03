@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
-import { uuidv7 } from "@event-store/contracts";
+import { createHash } from "node:crypto";
+import {
+  canonicalJson,
+  normalizeStoredEvent,
+  uuidv7,
+} from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
 import type { Pool } from "pg";
@@ -115,5 +120,10 @@ suite("Debezium CDC", () => {
       throw new Error(`EventRouter headers: ${JSON.stringify(event.headers)}`);
     expect(event.headers.id).toBe(envelope.eventId);
     expect(event.headers.type).toBe("order.created");
+    expect(event.headers.envelopeHash).toBe(
+      createHash("sha256")
+        .update(canonicalJson(normalizeStoredEvent(envelope)))
+        .digest("hex"),
+    );
   }, 60_000);
 });
