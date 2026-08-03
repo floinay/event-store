@@ -9,7 +9,9 @@
   "dependencies": {
     "@confluentinc/kafka-javascript": "1.10.0",
     "@event-store/contracts": "*",
-    "pg": "8.22.0"
+    "@event-store/upcasting": "*",
+    "pg": "8.22.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/pg": "8.15.6"

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
+import { UpcasterRegistry } from "@event-store/upcasting";
 import {
   canonicalJson,
   normalizeStoredEvent,
@@ -26,6 +28,68 @@ export type ProjectionHandler = (
   event: StoredEvent,
 ) => Promise<void>;
 export type ProjectionEventTransformer = (event: StoredEvent) => StoredEvent;
+
+export class ProjectionUnknownSchemaError extends Error {
+  readonly code = "projection_unknown_schema";
+}
+
+/** Event payload schemas are versioned after upcasting, never inferred. */
+export class ProjectionPayloadSchemas {
+  readonly #schemas = new Map<string, z.ZodType<unknown>>();
+
+  register(
+    eventName: string,
+    schemaVersion: number,
+    schema: z.ZodType<unknown>,
+  ): void {
+    if (!Number.isInteger(schemaVersion) || schemaVersion < 1)
+      throw new TypeError("schemaVersion must be a positive integer");
+    const key = `${eventName}@${schemaVersion}`;
+    if (this.#schemas.has(key))
+      throw new Error(`duplicate projection payload schema: ${key}`);
+    this.#schemas.set(key, schema);
+  }
+
+  parse(
+    eventName: string,
+    schemaVersion: number,
+    payload: unknown,
+  ): Record<string, unknown> {
+    const schema = this.#schemas.get(`${eventName}@${schemaVersion}`);
+    if (schema === undefined)
+      throw new ProjectionUnknownSchemaError(
+        `no projection payload schema for ${eventName}@${schemaVersion}`,
+      );
+    const output = schema.parse(payload);
+    if (output === null || typeof output !== "object" || Array.isArray(output))
+      throw new TypeError(
+        "projection event payload schema must yield an object",
+      );
+    return output as Record<string, unknown>;
+  }
+}
+
+export function createProjectionEventTransformer(
+  upcasters: UpcasterRegistry,
+  schemas: ProjectionPayloadSchemas,
+): ProjectionEventTransformer {
+  return (event) => {
+    const upcasted = upcasters.upcast(
+      event.eventName,
+      event.schemaVersion,
+      event.payload,
+    );
+    return {
+      ...event,
+      schemaVersion: upcasted.version,
+      payload: schemas.parse(
+        event.eventName,
+        upcasted.version,
+        upcasted.payload,
+      ),
+    };
+  };
+}
 
 export class ProjectionGapError extends Error {
   readonly code = "event_gap";
