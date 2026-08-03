@@ -10,7 +10,8 @@
     "@event-store/postgres-store": "*",
     "@grpc/grpc-js": "1.14.4",
     "@grpc/proto-loader": "0.8.0",
-    "pg": "8.22.0"
+    "pg": "8.22.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/pg": "8.15.6"

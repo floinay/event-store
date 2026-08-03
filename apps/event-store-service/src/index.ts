@@ -4,6 +4,7 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { Pool } from "pg";
 import { EventContextSchema, UuidV7 } from "@event-store/contracts";
+import { ZodError } from "zod";
 import {
   PostgresEventStore,
   type ExpectedRevision,
@@ -48,13 +49,23 @@ interface PutSnapshotRequest extends StreamRequest {
   };
 }
 
-function errorFrom(error: unknown, requestId?: string): grpc.ServiceError {
+export function errorFrom(
+  error: unknown,
+  requestId?: string,
+  appendDispatched = false,
+): grpc.ServiceError {
   const source = error as { code?: string; message?: string };
   const message = source.message ?? "internal error";
   const sqlCode = source.code;
   let code = grpc.status.INTERNAL;
   let machineCode = "internal_error";
-  if (sqlCode === "22023" || sqlCode === "22001")
+  if (
+    error instanceof ZodError ||
+    error instanceof SyntaxError ||
+    error instanceof RangeError ||
+    sqlCode === "22023" ||
+    sqlCode === "22001"
+  )
     [code, machineCode] = [grpc.status.INVALID_ARGUMENT, "validation_failed"];
   else if (sqlCode === "40001")
     [code, machineCode] = [grpc.status.ABORTED, "expected_revision_conflict"];
@@ -65,7 +76,30 @@ function errorFrom(error: unknown, requestId?: string): grpc.ServiceError {
   else if (sqlCode === "P0002")
     [code, machineCode] = [grpc.status.NOT_FOUND, "stream_not_found"];
   else if (
-    ["57P01", "57P02", "08000", "08003", "08006"].includes(sqlCode ?? "")
+    appendDispatched &&
+    [
+      "57P01",
+      "57P02",
+      "08000",
+      "08003",
+      "08006",
+      "ETIMEDOUT",
+      "ECONNRESET",
+      "ECONNREFUSED",
+    ].includes(sqlCode ?? "")
+  )
+    [code, machineCode] = [grpc.status.UNKNOWN, "commit_outcome_unknown"];
+  else if (
+    [
+      "57P01",
+      "57P02",
+      "08000",
+      "08003",
+      "08006",
+      "ETIMEDOUT",
+      "ECONNRESET",
+      "ECONNREFUSED",
+    ].includes(sqlCode ?? "")
   )
     [code, machineCode] = [grpc.status.UNAVAILABLE, "database_unavailable"];
   const result = Object.assign(
@@ -175,7 +209,7 @@ export async function startServer(): Promise<grpc.Server> {
           acknowledged_at: new Date().toISOString(),
         });
       } catch (error) {
-        callback(errorFrom(error, call.request.request_id));
+        callback(errorFrom(error, call.request.request_id, true));
       }
     },
     GetStreamHead: async (
