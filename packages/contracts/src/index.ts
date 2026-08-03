@@ -108,7 +108,11 @@ export function canonicalJson(value: unknown): string {
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
     return `{${Object.keys(record)
-      .sort()
+      // PostgreSQL COLLATE "C" compares UTF-8 bytes; use the same ordering
+      // rather than JavaScript's UTF-16 code-unit sort.
+      .sort((left, right) =>
+        Buffer.compare(Buffer.from(left), Buffer.from(right)),
+      )
       .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
       .join(",")}}`;
   }

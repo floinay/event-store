@@ -35,4 +35,8 @@ describe("event contracts", () => {
       '{"a":1,"b":[2,{"a":null,"z":true}]}',
     );
   });
+
+  it("uses PostgreSQL C-collation ordering for Unicode keys", () => {
+    expect(canonicalJson({ "😀": 2, "�": 1 })).toBe('{"�":1,"😀":2}');
+  });
 });

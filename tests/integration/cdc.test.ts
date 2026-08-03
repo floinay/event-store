@@ -92,7 +92,7 @@ suite("Debezium CDC", () => {
           eventName: "order.created",
           schemaVersion: 1,
           occurredAt: "2026-08-04T10:12:18.120Z",
-          payload: { orderRef: "o1" },
+          payload: { orderRef: "o1", "😀": 2, "�": 1 },
         },
       ],
     });
