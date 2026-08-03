@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { uuidv7 } from "@event-store/contracts";
+import { canonicalJson, uuidv7 } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
 import { ProjectionTransactionRunner } from "@event-store/projection-runtime";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
@@ -56,7 +56,7 @@ suite("projection crash boundary", () => {
       ],
     });
     const event = (await store.readStream("orders", "Order", aggregateId))[0]!;
-    const value = JSON.stringify(event);
+    const value = canonicalJson(event);
     const hash = createHash("sha256").update(value).digest("hex");
     const record = {
       topic: "event-store.events.v1",
