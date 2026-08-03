@@ -16,6 +16,7 @@
     "typecheck": "tsc -b --pretty false",
     "test": "npm run build && vitest run",
     "test:unit": "npm run build && vitest run tests/unit",
+    "test:integration": "npm run build && RUN_INTEGRATION=true vitest run --no-file-parallelism tests/sql-contract tests/integration",
     "lint": "eslint .",
     "format": "prettier --check .",
     "migrate": "npm run build && node tools/migrate/dist/index.js",

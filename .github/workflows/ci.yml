@@ -19,7 +19,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
-      - run: RUN_INTEGRATION=true npx vitest run tests/sql-contract/append.test.ts tests/integration/cdc.test.ts
+      - run: npm run test:integration
 
   stress:
     if: github.event_name == 'push'
