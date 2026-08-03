@@ -28,7 +28,7 @@ export async function reconcile(
     const hashes = await client.query<{ count: string }>(
       `SELECT count(*)::text
        FROM event_store.events
-       WHERE envelope_sha256 <> encode(digest(event_store.canonical_jsonb(event_envelope), 'sha256'), 'hex')`,
+       WHERE envelope_sha256 <> encode(event_store.digest(event_store.canonical_jsonb(event_envelope), 'sha256'), 'hex')`,
     );
     return {
       count: events.rows[0]?.count ?? "0",
