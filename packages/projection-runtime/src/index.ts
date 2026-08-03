@@ -112,7 +112,7 @@ export class ProjectionFailureReporter {
 
   async record(
     record: ConsumedRecord,
-    event: StoredEvent,
+    envelope: unknown,
     error: unknown,
     attemptCount: number,
   ): Promise<void> {
@@ -128,8 +128,8 @@ export class ProjectionFailureReporter {
       [
         this.identity.name,
         this.identity.generationId,
-        event.eventId,
-        record.headers.envelopeHash,
+        this.eventId(envelope),
+        this.envelopeHash(record),
         record.topic,
         record.partition,
         record.offset.toString(),
@@ -138,9 +138,36 @@ export class ProjectionFailureReporter {
           ? error.code
           : "projection_handler_failed",
         JSON.stringify(detail),
-        JSON.stringify(event),
+        JSON.stringify(envelope),
       ],
     );
+  }
+
+  async markDlqPublished(record: ConsumedRecord): Promise<void> {
+    await this.pool.query(
+      `UPDATE projection_runtime.failures SET dlq_published_at=clock_timestamp(),last_failed_at=clock_timestamp()
+       WHERE projection_name=$1 AND generation_id=$2 AND topic_name=$3 AND partition_no=$4 AND kafka_offset=$5`,
+      [
+        this.identity.name,
+        this.identity.generationId,
+        record.topic,
+        record.partition,
+        record.offset.toString(),
+      ],
+    );
+  }
+
+  private eventId(envelope: unknown): string | undefined {
+    if (envelope === null || typeof envelope !== "object") return undefined;
+    const eventId = (envelope as Record<string, unknown>).eventId;
+    return typeof eventId === "string" && /^[0-9a-f-]{36}$/i.test(eventId)
+      ? eventId
+      : undefined;
+  }
+
+  private envelopeHash(record: ConsumedRecord): string | undefined {
+    const hash = record.headers.envelopeHash;
+    return hash !== undefined && /^[0-9a-f]{64}$/.test(hash) ? hash : undefined;
   }
 }
 

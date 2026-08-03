@@ -13,6 +13,14 @@ export interface KafkaProjectionConfig {
   topic: string;
 }
 
+function rawEnvelope(value: Buffer): unknown {
+  try {
+    return JSON.parse(value.toString());
+  } catch {
+    return { rawBase64: value.toString("base64") };
+  }
+}
+
 /** KafkaJS-compatible adapter with manual, post-transaction offset commits. */
 export class KafkaProjectionRunner {
   constructor(
@@ -97,24 +105,35 @@ export class KafkaProjectionRunner {
         for (const delay of projectionRetryDelaysMs) {
           try {
             await this.transactionRunner.process(record, this.apply);
-            await consumer.commitOffsets([
-              {
-                topic,
-                partition,
-                offset: (BigInt(message.offset) + 1n).toString(),
-              },
-            ]);
-            return;
           } catch (error) {
             failure = error;
             await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
           }
+          for (const commitDelay of projectionRetryDelaysMs) {
+            try {
+              await consumer.commitOffsets([
+                {
+                  topic,
+                  partition,
+                  offset: (BigInt(message.offset) + 1n).toString(),
+                },
+              ]);
+              return;
+            } catch (commitError) {
+              failure = commitError;
+              await new Promise((resolve) => setTimeout(resolve, commitDelay));
+            }
+          }
+          // The DB checkpoint is durable. Retrying this record as a duplicate is
+          // safe; it must never be classified as a poisoned business event.
+          throw failure;
         }
         try {
-          const event = JSON.parse(message.value.toString()) as never;
+          const envelope = rawEnvelope(message.value);
           await this.failureReporter.record(
             record,
-            event,
+            envelope,
             failure,
             projectionRetryDelaysMs.length,
           );
@@ -132,11 +151,12 @@ export class KafkaProjectionRunner {
                     failure instanceof Error
                       ? failure.message
                       : String(failure),
-                  envelope: event,
+                  envelope,
                 }),
               },
             ],
           });
+          await this.failureReporter.markDlqPublished(record);
         } finally {
           pause();
         }
