@@ -103,13 +103,10 @@ suite("append SQL contract", () => {
 
   it("normalizes an omitted causationId to null in a direct SQL append", async () => {
     const requestId = id();
-    const result = await pool.query<{ event_envelope: { context: unknown } }>(
-      `SELECT event_envelope FROM event_store.events WHERE event_id IN (
-         SELECT (entry->>'eventId')::uuid
-         FROM jsonb_array_elements((
-           SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)
-         )->'events') AS entries(entry)
-       )`,
+    const appended = await pool.query<{
+      append_v1: { events: { eventId: string }[] };
+    }>(
+      "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
       [
         "orders-command",
         "orders",
@@ -131,6 +128,12 @@ suite("append SQL contract", () => {
           actor: { kind: "user", subjectRef: "usr_1" },
         }),
       ],
+    );
+    const eventId = appended.rows[0]?.append_v1.events[0]?.eventId;
+    if (eventId === undefined) throw new Error("direct append did not return eventId");
+    const result = await pool.query<{ event_envelope: { context: unknown } }>(
+      "SELECT event_envelope FROM event_store.events WHERE event_id=$1",
+      [eventId],
     );
     expect(result.rows[0]?.event_envelope.context).toMatchObject({
       causationId: null,
