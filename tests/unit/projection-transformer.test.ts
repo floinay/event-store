@@ -3,6 +3,7 @@ import { z } from "zod";
 import { uuidv7 } from "@event-store/contracts";
 import {
   createProjectionEventTransformer,
+  isProjectionInfrastructureEvent,
   ProjectionPayloadSchemas,
   ProjectionUnknownSchemaError,
 } from "@event-store/projection-runtime";
@@ -33,6 +34,20 @@ const event = () => {
 };
 
 describe("projection event transformer", () => {
+  it("identifies the reserved CDC latency probe as a handler-free record", () => {
+    const probe = event();
+    expect(
+      isProjectionInfrastructureEvent({
+        ...probe,
+        namespace: "system",
+        aggregateType: "CdcLatencyProbe",
+        eventName: "system.cdc.latency.probe",
+        producerService: "event-store-latency-probe",
+      }),
+    ).toBe(true);
+    expect(isProjectionInfrastructureEvent(probe)).toBe(false);
+  });
+
   it("upcasts and validates payloads before the projection handler", () => {
     const upcasters = new UpcasterRegistry();
     upcasters.register("order.created", 1, (payload) => ({

@@ -59,6 +59,21 @@ export type ProjectionHandler = (
 ) => Promise<void>;
 export type ProjectionEventTransformer = (event: StoredEvent) => StoredEvent;
 
+/**
+ * The service-owned CDC probe measures the canonical PostgreSQL→Kafka path.
+ * It is a transport control record, not a domain event, so every projection
+ * records its inbox/checkpoint but must never require a business schema or
+ * invoke a handler for it.
+ */
+export function isProjectionInfrastructureEvent(event: StoredEvent): boolean {
+  return (
+    event.namespace === "system" &&
+    event.aggregateType === "CdcLatencyProbe" &&
+    event.eventName === "system.cdc.latency.probe" &&
+    event.producerService === "event-store-latency-probe"
+  );
+}
+
 export class ProjectionUnknownSchemaError extends Error {
   readonly code = "projection_unknown_schema";
 }
@@ -311,7 +326,11 @@ export class ProjectionTransactionRunner {
       throw new TypeError("transactionTimeoutMs must be a positive integer");
     const wireValue = record.value.toString();
     const envelope = JSON.parse(wireValue);
-    const event = this.transform(StoredEventSchema.parse(envelope));
+    const storedEvent = StoredEventSchema.parse(envelope);
+    const infrastructureEvent = isProjectionInfrastructureEvent(storedEvent);
+    const event = infrastructureEvent
+      ? storedEvent
+      : this.transform(storedEvent);
     const hash = record.headers.envelopeHash;
     if (hash === undefined || !/^[0-9a-f]{64}$/.test(hash))
       throw new ProjectionIntegrityError("missing or invalid envelopeHash");
@@ -425,7 +444,7 @@ export class ProjectionTransactionRunner {
           throw new ProjectionIntegrityError(
             "event id was previously observed with another hash",
           );
-      } else {
+      } else if (!infrastructureEvent) {
         await this.crashBarrier?.hit("after_inbox_insert");
         const applied = apply(client, event, abort.signal);
         const races: Promise<void>[] = [applied, externalAbort];
