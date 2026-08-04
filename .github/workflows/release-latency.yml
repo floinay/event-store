@@ -22,3 +22,10 @@ jobs:
           LATENCY_BATCH_SIZE=1 LATENCY_PAYLOAD_BYTES=2048
           LATENCY_STREAM_COUNT=1000 LATENCY_HOT_STREAM_PERCENT=0
           npx vitest run tests/performance/cdc-latency.test.ts
+          --reporter=json --outputFile=release-latency.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-latency
+          path: release-latency.json
+          retention-days: 365
