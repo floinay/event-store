@@ -614,6 +614,17 @@ export class RecoveryCutoverCoordinator {
           expectedTimelineId,
         ],
       );
+      // The same full event-id proof also closes a real delivery incident.
+      // This runs in the activation transaction: its config-row lock fences
+      // barrier/probe appends until admission is reopened below.
+      await client.query(
+        "SELECT event_store.record_cdc_timeline_reconciliation($1,$2,$3)",
+        [
+          verification.projectionName,
+          verification.generationId,
+          expectedTimelineId,
+        ],
+      );
       await client.query(
         "SELECT event_store.activate_recovery_cdc_slot($1,$2,$3)",
         [slotName, connectorName, walBudgetBytes.toString()],

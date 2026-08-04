@@ -114,6 +114,7 @@ suite("logical slot-loss recovery", () => {
       return slot.rows[0]?.active === false;
     });
     await pool.query("SELECT pg_drop_replication_slot('event_store_live')");
+    await pool.query("SELECT event_store.set_cdc_delivery_health(false)");
     await expect(
       append(store, uuidv7(), "rejected-while-slot-missing"),
     ).rejects.toMatchObject({ code: "P0001" });
@@ -304,6 +305,25 @@ suite("logical slot-loss recovery", () => {
       8n * 1024n ** 3n,
       verification,
     );
+    await expect(
+      pool.query<{
+        cdc_reconciliation_required: boolean;
+        cdc_delivery_incident_epoch: string;
+        cdc_reconciled_incident_epoch: string;
+      }>(
+        `SELECT cdc_reconciliation_required,cdc_delivery_incident_epoch,
+                cdc_reconciled_incident_epoch
+           FROM event_store.runtime_config WHERE singleton`,
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          cdc_reconciliation_required: false,
+          cdc_delivery_incident_epoch: "1",
+          cdc_reconciled_incident_epoch: "1",
+        },
+      ],
+    });
     const verificationTimeline = await pool.query<{
       verified_timeline_id: number;
       current_timeline_id: number;
