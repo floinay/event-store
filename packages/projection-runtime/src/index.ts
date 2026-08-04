@@ -229,8 +229,17 @@ export class ProjectionTransactionRunner {
   async process(
     record: ConsumedRecord,
     apply: ProjectionHandler,
-    options: { allowReadCommittedOffsetGap?: boolean } = {},
+    options: {
+      allowReadCommittedOffsetGap?: boolean;
+      transactionTimeoutMs?: number;
+    } = {},
   ): Promise<"processed" | "duplicate"> {
+    if (
+      options.transactionTimeoutMs !== undefined &&
+      (!Number.isInteger(options.transactionTimeoutMs) ||
+        options.transactionTimeoutMs <= 0)
+    )
+      throw new TypeError("transactionTimeoutMs must be a positive integer");
     const wireValue = record.value.toString();
     const envelope = JSON.parse(wireValue);
     const event = this.transform(StoredEventSchema.parse(envelope));
@@ -255,8 +264,20 @@ export class ProjectionTransactionRunner {
     if (record.key !== partitionKey(event))
       throw new ProjectionIntegrityError("Kafka key does not match envelope");
     const client = await this.pool.connect();
+    // PostgreSQL emits a terminal socket error after transaction_timeout has
+    // already rejected the in-flight query. Keep a listener until disposal so
+    // node-postgres does not turn that expected backend shutdown into an
+    // uncaught process exception.
+    const absorbTerminalClientError = (): void => undefined;
+    client.on("error", absorbTerminalClientError);
+    let discardClient = false;
     try {
       await client.query("BEGIN");
+      if (options.transactionTimeoutMs !== undefined)
+        await client.query(
+          "SELECT set_config('transaction_timeout', $1, true)",
+          [`${options.transactionTimeoutMs}ms`],
+        );
       const checkpoint = await client.query<{ next_offset: string }>(
         `SELECT next_offset FROM projection_runtime.checkpoints WHERE projection_name=$1 AND generation_id=$2 AND topic_name=$3 AND partition_no=$4 FOR UPDATE`,
         [
@@ -318,10 +339,16 @@ export class ProjectionTransactionRunner {
       await client.query("COMMIT");
       return inserted.rowCount === 1 ? "processed" : "duplicate";
     } catch (error) {
+      // transaction_timeout intentionally terminates the backend. Never place
+      // that connection back in the pool after PostgreSQL reports 25P04.
+      discardClient = (error as { code?: unknown }).code === "25P04";
       await client.query("ROLLBACK").catch(() => undefined);
       throw error;
     } finally {
-      client.release();
+      client.release(
+        discardClient ? new Error("transaction timeout") : undefined,
+      );
+      if (!discardClient) client.off("error", absorbTerminalClientError);
     }
   }
 }

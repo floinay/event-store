@@ -105,9 +105,10 @@ export class KafkaProjectionRunner {
     });
     const expectedOffsets = new Map<string, bigint>();
     const readCommittedGapAttempts = new Set<string>();
-    const alignPartition = async (
-      assignment: { topic: string; partition: number },
-    ): Promise<bigint> => {
+    const alignPartition = async (assignment: {
+      topic: string;
+      partition: number;
+    }): Promise<bigint> => {
       const offsets = await admin.fetchTopicOffsets(assignment.topic, {
         isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
       });
@@ -123,7 +124,10 @@ export class KafkaProjectionRunner {
         assignment.partition,
         BigInt(low),
       );
-      expectedOffsets.set(`${assignment.topic}/${assignment.partition}`, expected);
+      expectedOffsets.set(
+        `${assignment.topic}/${assignment.partition}`,
+        expected,
+      );
       // A previous process can have committed Kafka farther than its durable
       // PostgreSQL checkpoint. Reset the group to the database source of truth
       // before seeking, so a re-assignment cannot skip a durable record.
@@ -146,16 +150,12 @@ export class KafkaProjectionRunner {
         .assignment()
         .filter((assignment) => assignment.topic === this.config.topic);
       if (assignments.length === 0) return;
-      await Promise.all(assignments.map((assignment) => alignPartition(assignment)));
+      await Promise.all(
+        assignments.map((assignment) => alignPartition(assignment)),
+      );
     };
     await consumer.run({
-      eachBatch: async ({
-        batch,
-        pause,
-        heartbeat,
-        isRunning,
-        isStale,
-      }) => {
+      eachBatch: async ({ batch, pause, heartbeat, isRunning, isStale }) => {
         const topic = batch.topic;
         const partition = batch.partition;
         const message = batch.messages[0];
@@ -209,8 +209,9 @@ export class KafkaProjectionRunner {
             const offsets = await admin.fetchTopicOffsets(topic, {
               isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
             });
-            const low = offsets.find((offset) => offset.partition === partition)
-              ?.low;
+            const low = offsets.find(
+              (offset) => offset.partition === partition,
+            )?.low;
             if (low === undefined || BigInt(low) > expected) {
               pause();
               throw new Error(
@@ -241,13 +242,17 @@ export class KafkaProjectionRunner {
               () =>
                 this.transactionRunner.process(record, this.apply, {
                   allowReadCommittedOffsetGap: record.offset > expected,
+                  transactionTimeoutMs: 10_000,
                 }),
               heartbeat,
             );
           } catch (error) {
             failure = error;
             await withHeartbeats(
-              () => wait(Math.min(delay, Math.max(0, processingDeadline - Date.now()))),
+              () =>
+                wait(
+                  Math.min(delay, Math.max(0, processingDeadline - Date.now())),
+                ),
               heartbeat,
             );
             continue;

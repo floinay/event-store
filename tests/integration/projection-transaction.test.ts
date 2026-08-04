@@ -135,4 +135,72 @@ suite("projection crash boundary", () => {
       ).rows[0]?.next_offset,
     ).toBe("1");
   });
+
+  it("cancels a blocked projection SQL transaction at its configured deadline", async () => {
+    const generationId = uuidv7();
+    const aggregateId = uuidv7();
+    const requestId = uuidv7();
+    await pool.query(
+      "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ('timeout',$1,'building',clock_timestamp())",
+      [generationId],
+    );
+    await store.append({
+      producerService: "orders-command",
+      namespace: "orders",
+      aggregateType: "Order",
+      aggregateId,
+      requestId,
+      expectedRevision: { kind: "no_stream" },
+      context: {
+        requestId,
+        correlationId: uuidv7(),
+        causationId: null,
+        actor: { kind: "user", subjectRef: "usr_timeout" },
+      },
+      events: [
+        {
+          eventName: "order.created",
+          schemaVersion: 1,
+          occurredAt: "2026-08-04T10:12:18.120Z",
+          payload: { orderRef: "timeout" },
+        },
+      ],
+    });
+    const event = (await store.readStream("orders", "Order", aggregateId))[0]!;
+    const value = canonicalJson(event);
+    const record = {
+      topic: "event-store.events.v1",
+      partition: 0,
+      offset: 0n,
+      key: `orders|Order|${aggregateId}`,
+      value,
+      headers: {
+        id: event.eventId,
+        type: event.eventName,
+        envelopeHash: createHash("sha256").update(value).digest("hex"),
+        namespace: event.namespace,
+        aggregateType: event.aggregateType,
+        streamRevision: event.streamRevision,
+      },
+    };
+    const runner = new ProjectionTransactionRunner(
+      pool,
+      { name: "timeout", generationId },
+      (stored) => stored,
+    );
+    await expect(
+      runner.process(
+        record,
+        (client) => client.query("SELECT pg_sleep(1)").then(() => undefined),
+        {
+          transactionTimeoutMs: 50,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "25P04" });
+    expect(
+      await runner.process(record, async () => undefined, {
+        transactionTimeoutMs: 1_000,
+      }),
+    ).toBe("processed");
+  });
 });
