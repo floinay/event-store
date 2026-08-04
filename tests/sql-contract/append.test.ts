@@ -65,6 +65,48 @@ suite("append SQL contract", () => {
     ).toEqual(["1", "2"]);
   });
 
+  it("rejects a changed body for an already acknowledged requestId", async () => {
+    const aggregateId = id();
+    const requestId = id();
+    const input = appendInput(aggregateId, requestId, [{ orderRef: "first" }]);
+    await store.append(input);
+    await expect(
+      store.append({
+        ...input,
+        events: [
+          {
+            ...input.events[0]!,
+            payload: { orderRef: "changed" },
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "23505" });
+  });
+
+  it("accepts a 100-event batch and rejects 101 events atomically", async () => {
+    const accepted = appendInput(
+      id(),
+      id(),
+      Array.from({ length: 100 }, (_, index) => ({ index: String(index) })),
+    );
+    expect((await store.append(accepted)).events).toHaveLength(100);
+    const rejected = appendInput(
+      id(),
+      id(),
+      Array.from({ length: 101 }, (_, index) => ({ index: String(index) })),
+    );
+    await expect(store.append(rejected)).rejects.toMatchObject({
+      code: "22023",
+    });
+    expect(
+      await store.getStreamHead(
+        rejected.namespace,
+        rejected.aggregateType,
+        rejected.aggregateId,
+      ),
+    ).toBeUndefined();
+  });
+
   it("owns SECURITY DEFINER functions by event_store_owner", async () => {
     const owner = await pool.query<{ owner: string }>(
       "SELECT pg_get_userbyid(proowner) AS owner FROM pg_proc WHERE pronamespace='event_store'::regnamespace AND proname='append_v1'",
@@ -101,6 +143,31 @@ suite("append SQL contract", () => {
       app_append: true,
       public_unchecked: true,
     });
+  });
+
+  it("denies direct event-table writes and preserves event immutability", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("SET ROLE event_store_app");
+      await expect(
+        client.query(
+          "INSERT INTO event_store.events(event_number,event_id) VALUES (1,$1)",
+          [id()],
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+    } finally {
+      await client.query("RESET ROLE").catch(() => undefined);
+      client.release();
+    }
+    const event = await pool.query<{ event_id: string }>(
+      "SELECT event_id FROM event_store.events LIMIT 1",
+    );
+    await expect(
+      pool.query(
+        "UPDATE event_store.events SET event_name='order.changed' WHERE event_id=$1",
+        [event.rows[0]?.event_id],
+      ),
+    ).rejects.toMatchObject({ code: "55000" });
   });
 
   it("rejects a direct SQL append with an invalid canonical context", async () => {
@@ -215,3 +282,30 @@ suite("append SQL contract", () => {
     );
   });
 });
+
+function appendInput(
+  aggregateId: string,
+  requestId: string,
+  payloads: readonly Record<string, string>[],
+) {
+  return {
+    producerService: "orders-command",
+    namespace: "orders",
+    aggregateType: "Order",
+    aggregateId,
+    requestId,
+    expectedRevision: { kind: "no_stream" as const },
+    context: {
+      requestId,
+      correlationId: id(),
+      causationId: null,
+      actor: { kind: "user" as const, subjectRef: "usr_1" },
+    },
+    events: payloads.map((payload) => ({
+      eventName: "order.created",
+      schemaVersion: 1,
+      occurredAt: "2026-08-04T10:12:18.120Z",
+      payload,
+    })),
+  };
+}
