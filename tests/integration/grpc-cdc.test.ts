@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
@@ -256,6 +258,117 @@ suite("gRPC to CDC", () => {
     },
     60_000,
   );
+
+  it("retries exactly once after a real service SIGKILL after PostgreSQL commit", async () => {
+    const address = "127.0.0.1:50064";
+    const definition = protoLoader.loadSync(
+      join(process.cwd(), "packages/contracts/proto/event_store.proto"),
+      { keepCase: true, longs: String, enums: String, defaults: false },
+    );
+    const service = (
+      grpc.loadPackageDefinition(definition) as unknown as {
+        eventstore: {
+          v1: { EventStoreService: grpc.ServiceClientConstructor };
+        };
+      }
+    ).eventstore.v1.EventStoreService;
+    const startChild = (crashPoint?: string): ChildProcess =>
+      spawn(
+        process.execPath,
+        [join(process.cwd(), "apps/event-store-service/dist/index.js")],
+        {
+          env: {
+            ...process.env,
+            GRPC_LISTEN_ADDRESS: address,
+            HTTP_LISTEN_ADDRESS: undefined,
+            ...(crashPoint === undefined
+              ? {}
+              : { EVENT_STORE_TEST_CRASH_POINT: crashPoint }),
+          },
+          stdio: "ignore",
+        },
+      );
+    const call = (
+      appendClient: AppendClient,
+      request: Record<string, unknown>,
+    ) =>
+      new Promise<Record<string, unknown>>((resolve, reject) =>
+        appendClient.AppendToStream(request, (error, response) =>
+          error === null ? resolve(response ?? {}) : reject(error),
+        ),
+      );
+    const requestId = uuidv7();
+    const request = {
+      request_id: requestId,
+      namespace: "orders",
+      aggregate_type: "Order",
+      aggregate_id: uuidv7(),
+      expected_revision: { no_stream: {} },
+      context: {
+        correlation_id: uuidv7(),
+        actor_json: Buffer.from(
+          JSON.stringify({ kind: "user", subjectRef: "usr_process_crash" }),
+        ),
+      },
+      events: [
+        {
+          event_name: "order.created",
+          schema_version: 1,
+          occurred_at: "2026-08-04T10:12:18.120Z",
+          payload_json: Buffer.from(JSON.stringify({ orderRef: "process" })),
+        },
+      ],
+    };
+    let child = startChild("after_postgres_commit");
+    let appendClient = new service(
+      address,
+      grpc.credentials.createInsecure(),
+    ) as AppendClient;
+    try {
+      await new Promise<void>((resolve, reject) =>
+        appendClient.waitForReady(Date.now() + 30_000, (error) =>
+          error === null || error === undefined ? resolve() : reject(error),
+        ),
+      );
+      const exited = once(child, "exit");
+      await expect(call(appendClient, request)).rejects.toBeDefined();
+      const [code, signal] = await exited;
+      expect(code).toBeNull();
+      expect(signal).toBe("SIGKILL");
+      appendClient.close();
+      child = startChild();
+      appendClient = new service(
+        address,
+        grpc.credentials.createInsecure(),
+      ) as AppendClient;
+      await new Promise<void>((resolve, reject) =>
+        appendClient.waitForReady(Date.now() + 30_000, (error) =>
+          error === null || error === undefined ? resolve() : reject(error),
+        ),
+      );
+      await expect(call(appendClient, request)).resolves.toMatchObject({
+        request_id: requestId,
+      });
+      const pool = await stack.pool();
+      try {
+        await expect(
+          pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM event_store.events WHERE request_id=$1",
+            [requestId],
+          ),
+        ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+      } finally {
+        await pool.end();
+      }
+    } finally {
+      appendClient.close();
+      if (child.exitCode === null) {
+        const exited = once(child, "exit");
+        child.kill("SIGKILL");
+        await exited;
+      }
+    }
+  }, 90_000);
 
   it("keeps a bounded durable append window after a Connect process crash", async () => {
     await stack.stopConnect();

@@ -314,6 +314,11 @@ export async function startServer(
     appendDurationSeconds: 0,
     dbCommitDurationSeconds: 0,
   };
+  const processCrashPoint = process.env.EVENT_STORE_TEST_CRASH_POINT;
+  const hitCrashBoundary = async (point: ServiceCrashPoint): Promise<void> => {
+    await testHooks?.hit(point);
+    if (processCrashPoint === point) process.kill(process.pid, "SIGKILL");
+  };
   const connectUrl = process.env.CONNECT_URL;
   const connectMetricsPort = process.env.CONNECT_METRICS_PORT;
   const kafkaBrokers = process.env.KAFKA_BROKERS?.split(",");
@@ -453,14 +458,14 @@ export async function startServer(
             new Error("critical append database principal is not configured"),
             { code: grpc.status.PERMISSION_DENIED },
           );
-        await testHooks?.hit("before_sql");
+        await hitCrashBoundary("before_sql");
         const databaseStarted = performance.now();
         const result = await appendStore.append(
           parseAppendRequest(call.request, producerService, trafficClass),
         );
         metrics.dbCommitDurationSeconds +=
           (performance.now() - databaseStarted) / 1_000;
-        await testHooks?.hit("after_postgres_commit");
+        await hitCrashBoundary("after_postgres_commit");
         if (result.commitEpochMs !== undefined) {
           const commitMetadata = new grpc.Metadata();
           commitMetadata.set(
@@ -469,7 +474,7 @@ export async function startServer(
           );
           call.sendMetadata(commitMetadata);
         }
-        await testHooks?.hit("before_grpc_response_write");
+        await hitCrashBoundary("before_grpc_response_write");
         callback(null, {
           request_id: result.requestId,
           previous_revision: result.previousRevision,
