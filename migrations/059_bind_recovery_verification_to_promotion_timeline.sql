@@ -11,8 +11,7 @@ CREATE OR REPLACE FUNCTION event_store.verify_recovery_cdc_cutover(
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, event_store, projection_runtime
 AS $$
-DECLARE v_barriers integer; v_partitions integer; v_missing integer; v_failures integer;
-DECLARE v_timeline_id integer;
+DECLARE v_barriers integer; v_partitions integer; v_missing integer; v_failures integer; v_timeline_id integer;
 BEGIN
   IF p_slot_name !~ '^event_store_[a-z0-9_]{1,50}$'
      OR p_connector_name !~ '^event-store-[a-z0-9-]{1,63}$'
@@ -51,6 +50,9 @@ BEGIN
     kafka_lag=EXCLUDED.kafka_lag,verified_at=EXCLUDED.verified_at,
     verified_timeline_id=EXCLUDED.verified_timeline_id;
 END $$;
+
+GRANT EXECUTE ON FUNCTION event_store.current_timeline_id()
+  TO event_store_app, event_store_cdc;
 
 CREATE OR REPLACE FUNCTION event_store.activate_recovery_cdc_slot(
   p_slot_name text,

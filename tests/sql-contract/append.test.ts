@@ -581,6 +581,28 @@ suite("append SQL contract", () => {
     ).resolves.toMatchObject({ rows: [{ public_can_execute: false }] });
   });
 
+  it("allows runtime principals to read the current promotion timeline", async () => {
+    await expect(
+      pool.query<{
+        app_can_execute: boolean;
+        cdc_can_execute: boolean;
+        public_can_execute: boolean;
+      }>(
+        `SELECT has_function_privilege('event_store_app', 'event_store.current_timeline_id()', 'EXECUTE') AS app_can_execute,
+                has_function_privilege('event_store_cdc', 'event_store.current_timeline_id()', 'EXECUTE') AS cdc_can_execute,
+                has_function_privilege('public', 'event_store.current_timeline_id()', 'EXECUTE') AS public_can_execute`,
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          app_can_execute: true,
+          cdc_can_execute: true,
+          public_can_execute: false,
+        },
+      ],
+    });
+  });
+
   it("rejects append admission for a non-failover CDC slot", async () => {
     const original = await pool.query<{ cdc_slot_name: string }>(
       "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
