@@ -623,6 +623,25 @@ suite("append SQL contract", () => {
     ).rejects.toMatchObject({ code: "P0001" });
   });
 
+  it("requires event-id reconciliation after a delivery incident", async () => {
+    await pool.query("SELECT event_store.set_cdc_delivery_health(false)");
+    try {
+      const timeline = await pool.query<{ timeline_id: number }>(
+        "SELECT event_store.current_timeline_id() AS timeline_id",
+      );
+      await expect(
+        pool.query(
+          "SELECT event_store.set_cdc_delivery_health_on_timeline($1)",
+          [timeline.rows[0]?.timeline_id],
+        ),
+      ).rejects.toMatchObject({ code: "P0001" });
+    } finally {
+      await pool.query(
+        "UPDATE event_store.runtime_config SET cdc_reconciliation_required=false WHERE singleton",
+      );
+    }
+  });
+
   it("rejects append admission for a non-failover CDC slot", async () => {
     const original = await pool.query<{ cdc_slot_name: string }>(
       "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",

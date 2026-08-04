@@ -612,7 +612,9 @@ export async function startServer(
   }
   // Never inherit an old healthy flag across service restart or promotion.
   // The monitor can reopen it only through a current-timeline proof.
-  await pool.query("SELECT event_store.set_cdc_delivery_health(false)");
+  await pool.query(
+    "SELECT event_store.close_cdc_delivery_health_for_restart()",
+  );
   if (latencyProbeIntervalText !== undefined)
     latencyProbe = await startCdcLatencyProbe(
       store,
