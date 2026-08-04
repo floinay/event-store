@@ -38,8 +38,8 @@ describe("production HA topology", () => {
     expect(postgres).toContain("synchronizeReplicas:");
     expect(postgres).toContain('retentionPolicy: "35d"');
     expect(postgres).toContain("walStorage:");
-    expect(postgres).toContain("size: 50Gi");
-    expect(postgres).toContain('requests: { cpu: "2", memory: 8Gi }');
+    expect(postgres).toContain("size: 256Gi");
+    expect(postgres).toContain('requests: { cpu: "8", memory: 32Gi }');
     expect(postgres).toContain("kind: ScheduledBackup");
     expect(postgres).toContain('schedule: "0 0 0 * * *"');
     expect(kafka).toContain("replicas: 3");
@@ -57,7 +57,7 @@ describe("production HA topology", () => {
     expect(runtime).toContain("HTTP_LISTEN_ADDRESS");
     expect(runtime).toContain("NODE_OPTIONS");
     expect(runtime).toContain("--max-old-space-size=6144");
-    expect(runtime).toContain("memory: 8Gi");
+    expect(runtime).toContain("memory: 4Gi");
     expect(runtime).toContain("GRPC_TLS_CERT_PEM");
     expect(runtime).toContain("event-store-grpc-tls");
     expect(runtime).toContain("CRITICAL_DATABASE_URL");
@@ -68,7 +68,7 @@ describe("production HA topology", () => {
     expect(runtime).toContain("CONNECT_PRODUCER_COMPRESSION_TYPE");
     expect(runtime).toContain("CDC_LATENCY_PROBE_INTERVAL_MS");
     expect(runtime).toContain("name: connect");
-    expect(runtime).toContain('requests: { cpu: "2", memory: 4Gi }');
+    expect(runtime).toContain('limits: { cpu: "2", memory: 4Gi }');
     expect(preflight).toContain(
       "assert_failover_candidate('event_store_live')",
     );

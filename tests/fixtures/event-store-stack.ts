@@ -25,6 +25,7 @@ export class EventStoreStack {
   #connectKafkaProxy?: CreatedProxy;
   #connectUsesToxiproxy = false;
   #connectUsesKafkaProxy = false;
+  #productionResources = false;
 
   async createPitrBaseBackup(): Promise<{
     basePath: string;
@@ -150,8 +151,10 @@ EOF
       cdc?: boolean;
       toxiproxy?: boolean;
       connectKafkaProxy?: boolean;
+      productionResources?: boolean;
     } = {},
   ): Promise<void> {
+    this.#productionResources = options.productionResources === true;
     this.#network = await new Network().start();
     this.#postgres = await new GenericContainer("postgres:18.4-bookworm")
       .withEnvironment({
@@ -182,6 +185,9 @@ EOF
       ])
       .withNetwork(this.#network)
       .withNetworkAliases("postgres")
+      .withResourcesQuota(
+        this.#productionResources ? { cpu: 8, memory: 32 } : {},
+      )
       .withExposedPorts(5432)
       // The official image logs readiness once for bootstrap and again for its TCP server.
       .withWaitStrategy(
@@ -248,6 +254,9 @@ EOF
       })
       .withNetwork(this.#network)
       .withNetworkAliases("kafka")
+      .withResourcesQuota(
+        this.#productionResources ? { cpu: 8, memory: 32 } : {},
+      )
       .withExposedPorts({ container: 9092, host: kafkaExternalPort })
       .withWaitStrategy(Wait.forLogMessage(/Kafka Server started/))
       .start();
@@ -342,6 +351,9 @@ EOF
       })
       .withNetwork(this.#network)
       .withNetworkAliases("connect")
+      .withResourcesQuota(
+        this.#productionResources ? { cpu: 2, memory: 4 } : {},
+      )
       .withAddedCapabilities("NET_ADMIN")
       .withExposedPorts(8083)
       .withWaitStrategy(Wait.forHttp("/connector-plugins", 8083))

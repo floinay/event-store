@@ -30,7 +30,7 @@ jobs:
 
   cdc-latency:
     needs: release-gates
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, event-store-performance]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4

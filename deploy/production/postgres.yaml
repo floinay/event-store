@@ -45,10 +45,10 @@ spec:
   storage:
     size: 200Gi
   walStorage:
-    size: 50Gi
+    size: 256Gi
   resources:
-    requests: { cpu: "2", memory: 8Gi }
-    limits: { cpu: "4", memory: 16Gi }
+    requests: { cpu: "8", memory: 32Gi }
+    limits: { cpu: "8", memory: 32Gi }
   monitoring:
     enablePodMonitor: true
     customQueriesConfigMap:

@@ -70,8 +70,8 @@ spec:
               valueFrom:
                 secretKeyRef: { name: event-store-grpc-tls, key: ca.pem }
           resources:
-            requests: { cpu: "1", memory: 2Gi }
-            limits: { cpu: "2", memory: 8Gi }
+            requests: { cpu: "2", memory: 4Gi }
+            limits: { cpu: "2", memory: 4Gi }
           readinessProbe:
             httpGet: { path: /readyz, port: http }
 ---
@@ -158,7 +158,7 @@ spec:
             - { name: cdc-secret, mountPath: /run/secrets, readOnly: true }
           resources:
             requests: { cpu: "2", memory: 4Gi }
-            limits: { cpu: "4", memory: 8Gi }
+            limits: { cpu: "2", memory: 4Gi }
         - name: jmx-exporter
           image: event-store-connect-metrics:1.6.0
           ports: [{ name: metrics, containerPort: 9404 }]

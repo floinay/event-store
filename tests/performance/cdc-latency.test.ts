@@ -81,6 +81,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       cdc: true,
       toxiproxy: connectKafkaLatencyMs > 0,
       connectKafkaProxy: connectKafkaLatencyMs > 0,
+      productionResources: process.env.RUN_RELEASE_LATENCY === "true",
     });
     if (connectKafkaLatencyMs > 0)
       await stack.addConnectKafkaLatency(connectKafkaLatencyMs);
