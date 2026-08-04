@@ -70,48 +70,49 @@ export class KafkaProjectionRunner {
       rejectAssigned = reject;
     });
     const expectedOffsets = new Map<string, bigint>();
+    const resyncAttempts = new Set<string>();
+    const alignPartition = async (
+      assignment: { topic: string; partition: number },
+    ): Promise<bigint> => {
+      const offsets = await admin.fetchTopicOffsets(assignment.topic, {
+        isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
+      });
+      const low = offsets.find(
+        (offset) => offset.partition === assignment.partition,
+      )?.low;
+      if (low === undefined)
+        throw new Error(
+          `Kafka low watermark is unavailable for ${assignment.topic}/${assignment.partition}`,
+        );
+      const expected = await this.checkpointStore.ensureAtLowWatermark(
+        assignment.topic,
+        assignment.partition,
+        BigInt(low),
+      );
+      expectedOffsets.set(`${assignment.topic}/${assignment.partition}`, expected);
+      // A previous process can have committed Kafka farther than its durable
+      // PostgreSQL checkpoint. Reset the group to the database source of truth
+      // before seeking, so a re-assignment cannot skip a durable record.
+      await consumer.commitOffsets([
+        {
+          topic: assignment.topic,
+          partition: assignment.partition,
+          offset: expected.toString(),
+        },
+      ]);
+      consumer.seek({
+        topic: assignment.topic,
+        partition: assignment.partition,
+        offset: expected.toString(),
+      });
+      return expected;
+    };
     const alignAssignment = async (): Promise<void> => {
       const assignments = consumer
         .assignment()
         .filter((assignment) => assignment.topic === this.config.topic);
       if (assignments.length === 0) return;
-      const offsets = await admin.fetchTopicOffsets(this.config.topic, {
-        isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
-      });
-      for (const assignment of assignments) {
-        const low = offsets.find(
-          (offset) => offset.partition === assignment.partition,
-        )?.low;
-        if (low === undefined)
-          throw new Error(
-            `Kafka low watermark is unavailable for ${assignment.topic}/${assignment.partition}`,
-          );
-        const expected = await this.checkpointStore.ensureAtLowWatermark(
-          assignment.topic,
-          assignment.partition,
-          BigInt(low),
-        );
-        expectedOffsets.set(
-          `${assignment.topic}/${assignment.partition}`,
-          expected,
-        );
-        // A previous process can have committed Kafka farther than its durable
-        // PostgreSQL checkpoint (for example, across a crash between the two
-        // acknowledgements). Reset the group to the database source of truth
-        // before seeking; otherwise the broker assignment may skip a record.
-        await consumer.commitOffsets([
-          {
-            topic: assignment.topic,
-            partition: assignment.partition,
-            offset: expected.toString(),
-          },
-        ]);
-        consumer.seek({
-          topic: assignment.topic,
-          partition: assignment.partition,
-          offset: expected.toString(),
-        });
-      }
+      await Promise.all(assignments.map((assignment) => alignPartition(assignment)));
     };
     await consumer.run({
       eachMessage: async ({ topic, partition, message, pause }) => {
@@ -151,9 +152,20 @@ export class KafkaProjectionRunner {
           ]);
           return;
         }
-        // With read_committed, a seek to `expected` can legitimately yield a
-        // later offset because Kafka hides transaction-control batches. The
-        // transaction runner records the delivered offset atomically.
+        if (record.offset > expected) {
+          const attempt = `${topic}/${partition}/${expected}`;
+          if (!resyncAttempts.has(attempt)) {
+            // Rebalance notifications are not exposed by this client API. On
+            // the first discontinuity, re-check retention and force the group
+            // back to the durable checkpoint before accepting any gap.
+            resyncAttempts.add(attempt);
+            await alignPartition({ topic, partition });
+            return;
+          }
+          // The forced seek above proved that Kafka skipped only records hidden
+          // from a read_committed consumer (transaction-control/aborted data).
+          resyncAttempts.delete(attempt);
+        }
         let failure: unknown;
         for (const delay of projectionRetryDelaysMs) {
           try {
