@@ -81,6 +81,7 @@ spec:
   selector: { app: event-store-connect }
   ports:
     - { name: rest, port: 8083, targetPort: rest }
+    - { name: metrics, port: 9404, targetPort: metrics }
 ---
 apiVersion: apps/v1
 kind: Deployment

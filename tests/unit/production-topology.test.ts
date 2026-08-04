@@ -12,6 +12,7 @@ describe("production HA topology", () => {
       connector,
       localPostgres,
       compose,
+      monitoring,
     ] = await Promise.all(
       ["postgres.yaml", "kafka.yaml", "runtime.yaml"]
         .map((file) => readFile(`deploy/production/${file}`, "utf8"))
@@ -21,6 +22,7 @@ describe("production HA topology", () => {
           readFile("deploy/connector/event-store-live.json", "utf8"),
           readFile("deploy/postgres/postgresql.conf", "utf8"),
           readFile("deploy/docker-compose.yml", "utf8"),
+          readFile("deploy/production/monitoring.yaml", "utf8"),
         ]),
     );
     expect(postgres).toContain("instances: 3");
@@ -67,5 +69,10 @@ describe("production HA topology", () => {
     expect(connector).toContain(
       '"database.hostname": "event-store-postgres-rw"',
     );
+    expect(monitoring).toContain("kind: ServiceMonitor");
+    expect(monitoring).toContain("kind: PrometheusRule");
+    expect(monitoring).toContain("EventStoreAppendUnknownOutcome");
+    expect(monitoring).toContain("EventStoreConnectSourceDisconnected");
+    expect(monitoring).toContain("EventStoreConnectSourceLagP99High");
   });
 });
