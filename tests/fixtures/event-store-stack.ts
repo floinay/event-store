@@ -20,7 +20,9 @@ export class EventStoreStack {
   #connect?: Awaited<ReturnType<GenericContainer["start"]>>;
   #toxiproxy?: Awaited<ReturnType<ToxiProxyContainer["start"]>>;
   #postgresConnectProxy?: CreatedProxy;
+  #connectKafkaProxy?: CreatedProxy;
   #connectUsesToxiproxy = false;
+  #connectUsesKafkaProxy = false;
 
   async createPitrBaseBackup(): Promise<{
     basePath: string;
@@ -133,7 +135,7 @@ EOF
   }
 
   async start(
-    options: { cdc?: boolean; toxiproxy?: boolean } = {},
+    options: { cdc?: boolean; toxiproxy?: boolean; connectKafkaProxy?: boolean } = {},
   ): Promise<void> {
     this.#network = await new Network().start();
     this.#postgres = await new GenericContainer("postgres:18.4-bookworm")
@@ -192,6 +194,11 @@ EOF
       this.#postgresConnectProxy = await this.#toxiproxy.createProxy({
         name: "postgres-connect",
         upstream: "postgres:5432",
+      });
+      this.#connectKafkaProxy = await this.#toxiproxy.createProxy({
+        name: "connect-kafka",
+        listen: "0.0.0.0:8667",
+        upstream: "kafka:29092",
       });
     }
     const database = new Pool({ connectionString: this.databaseUrl });
@@ -258,6 +265,7 @@ EOF
       ],
     });
     await admin.disconnect();
+    this.#connectUsesKafkaProxy = options.connectKafkaProxy === true;
     await this.startConnect(options.toxiproxy === true);
   }
 
@@ -269,7 +277,9 @@ EOF
       "quay.io/debezium/connect:3.6.0.Final",
     )
       .withEnvironment({
-        BOOTSTRAP_SERVERS: "kafka:29092",
+        BOOTSTRAP_SERVERS: this.#connectUsesKafkaProxy
+          ? "toxiproxy:8667"
+          : "kafka:29092",
         GROUP_ID: "event-store-connect",
         CONFIG_STORAGE_TOPIC: "_connect-event-store-configs",
         OFFSET_STORAGE_TOPIC: "_connect-event-store-offsets",
@@ -495,6 +505,12 @@ EOF
     if (this.#postgresConnectProxy === undefined)
       throw new Error("Postgres-to-Connect Toxiproxy is not configured");
     await this.#postgresConnectProxy.setEnabled(enabled);
+  }
+
+  async setConnectKafkaEnabled(enabled: boolean): Promise<void> {
+    if (this.#connectKafkaProxy === undefined)
+      throw new Error("Connect-to-Kafka Toxiproxy is not configured");
+    await this.#connectKafkaProxy.setEnabled(enabled);
   }
 
   async stopConnect(): Promise<void> {
