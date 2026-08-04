@@ -31,6 +31,7 @@ jobs:
           tests/integration/cdc.test.ts
           tests/integration/connect-network-recovery.test.ts
           tests/integration/connect-kafka-recovery.test.ts
+          tests/integration/connect-long-outage-recovery.test.ts
           --reporter=json --outputFile=reliability-nightly.json
       - run: >-
           RUN_STRESS=true npx vitest run --no-file-parallelism
@@ -56,9 +57,10 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: >-
-          RUN_INTEGRATION=true npx vitest run --no-file-parallelism
+          RUN_INTEGRATION=true RUN_LONG_RECOVERY=true npx vitest run --no-file-parallelism
           tests/integration/replay-coordinator.test.ts
           tests/integration/connect-kafka-recovery.test.ts
+          tests/integration/connect-long-outage-recovery.test.ts
           tests/integration/pitr-recovery.test.ts
           tests/integration/reconcile.test.ts
           --reporter=json --outputFile=reliability-weekly-recovery.json
