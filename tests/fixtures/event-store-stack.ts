@@ -308,6 +308,7 @@ EOF
       })
       .withNetwork(this.#network)
       .withNetworkAliases("connect")
+      .withAddedCapabilities("NET_ADMIN")
       .withExposedPorts(8083)
       .withWaitStrategy(Wait.forHttp("/connector-plugins", 8083))
       .start();
@@ -576,6 +577,17 @@ EOF
     if (this.#connectKafkaProxy === undefined)
       throw new Error("Connect-to-Kafka Toxiproxy is not configured");
     await this.#connectKafkaProxy.setEnabled(enabled);
+  }
+
+  async setConnectPacketLoss(percent: 1 | 5 | 0): Promise<void> {
+    if (this.#connect === undefined) throw new Error("Connect is not running");
+    const command =
+      percent === 0
+        ? "tc qdisc del dev eth0 root 2>/dev/null || true"
+        : `tc qdisc replace dev eth0 root netem loss ${percent}%`;
+    const result = await this.#connect.exec(["bash", "-ceu", command]);
+    if (result.exitCode !== 0)
+      throw new Error(`could not set Connect packet loss: ${result.stderr}`);
   }
 
   async stopConnect(): Promise<void> {

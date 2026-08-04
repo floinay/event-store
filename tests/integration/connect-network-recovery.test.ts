@@ -180,6 +180,14 @@ suite("PG to Connect network recovery", () => {
       } finally {
         await bandwidth.remove();
       }
+      for (const packetLoss of [1, 5] as const) {
+        await stack.setConnectPacketLoss(packetLoss);
+        try {
+          await waitFor(await append(`packet-loss-${packetLoss}`));
+        } finally {
+          await stack.setConnectPacketLoss(0);
+        }
+      }
       if (received.size === expected.size) complete();
       await delivered;
       expect(received).toEqual(expected);
