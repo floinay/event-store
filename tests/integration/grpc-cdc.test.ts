@@ -150,4 +150,54 @@ suite("gRPC to CDC", () => {
     );
     expect(metrics).toContain("event_store_append_total");
   });
+
+  it("fails closed after a Connect process crash releases the replication slot", async () => {
+    await stack.stopConnect();
+    const pool = await stack.pool();
+    try {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        const slot = await pool.query<{ active: boolean }>(
+          "SELECT active FROM pg_replication_slots WHERE slot_name='event_store_live'",
+        );
+        if (slot.rows[0]?.active === false) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      await expect(
+        fetch("http://127.0.0.1:50161/readyz"),
+      ).resolves.toMatchObject({
+        status: 503,
+      });
+      const error = await new Promise<grpc.ServiceError | null>((resolve) =>
+        client.AppendToStream(
+          {
+            request_id: uuidv7(),
+            namespace: "orders",
+            aggregate_type: "Order",
+            aggregate_id: uuidv7(),
+            expected_revision: { no_stream: {} },
+            context: {
+              correlation_id: uuidv7(),
+              actor_json: Buffer.from(
+                JSON.stringify({ kind: "user", subjectRef: "usr_1" }),
+              ),
+            },
+            events: [
+              {
+                event_name: "order.created",
+                schema_version: 1,
+                occurred_at: "2026-08-04T10:12:18.120Z",
+                payload_json: Buffer.from(JSON.stringify({ orderRef: "o2" })),
+              },
+            ],
+          },
+          (failure) => resolve(failure),
+        ),
+      );
+      expect(error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
+      expect(error?.details).toContain("cdc_admission_closed");
+    } finally {
+      await pool.end();
+    }
+  }, 60_000);
 });

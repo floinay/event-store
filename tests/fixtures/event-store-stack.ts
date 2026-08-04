@@ -264,6 +264,11 @@ export class EventStoreStack {
     await this.#postgresConnectProxy.setEnabled(enabled);
   }
 
+  async stopConnect(): Promise<void> {
+    await this.#connect?.stop();
+    this.#connect = undefined;
+  }
+
   async pool(): Promise<Pool> {
     return new Pool({ connectionString: this.databaseUrl });
   }
