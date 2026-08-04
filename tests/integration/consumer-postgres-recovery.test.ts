@@ -54,7 +54,7 @@ suite("projection consumer PostgreSQL recovery", () => {
     const upcasters = new UpcasterRegistry();
     upcasters.setCurrentVersion("order.created", 1);
     const schemas = new ProjectionPayloadSchemas();
-    schemas.register("order.created", 1, z.object({}).passthrough());
+    schemas.register("order.created", 1, z.object({}).strict());
     let databaseConnectionReached!: () => void;
     const databaseConnection = new Promise<void>((resolve) => {
       databaseConnectionReached = resolve;

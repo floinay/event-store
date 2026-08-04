@@ -89,6 +89,13 @@ export class ProjectionPayloadSchemas {
   ): void {
     if (!Number.isInteger(schemaVersion) || schemaVersion < 1)
       throw new TypeError("schemaVersion must be a positive integer");
+    if (
+      !(schema instanceof z.ZodObject) ||
+      !(schema.def.catchall instanceof z.ZodNever)
+    )
+      throw new TypeError(
+        "projection payload schema must be a strict Zod object",
+      );
     const key = `${eventName}@${schemaVersion}`;
     if (this.#schemas.has(key))
       throw new Error(`duplicate projection payload schema: ${key}`);

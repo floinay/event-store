@@ -102,4 +102,26 @@ describe("projection event transformer", () => {
       )(event()),
     ).toThrow(ProjectionUnknownSchemaError);
   });
+
+  it("requires a strict object payload schema", () => {
+    const schemas = new ProjectionPayloadSchemas();
+    expect(() =>
+      schemas.register("order.created", 1, z.object({ orderRef: z.string() })),
+    ).toThrow("strict Zod object");
+    expect(() =>
+      schemas.register(
+        "order.created",
+        1,
+        z.object({ orderRef: z.string() }).passthrough(),
+      ),
+    ).toThrow("strict Zod object");
+    schemas.register(
+      "order.created",
+      1,
+      z.object({ orderRef: z.string() }).strict(),
+    );
+    expect(() =>
+      schemas.parse("order.created", 1, { orderRef: "o1", extra: true }),
+    ).toThrow();
+  });
 });
