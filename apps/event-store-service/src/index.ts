@@ -486,7 +486,11 @@ export async function startServer(
           appendDispatched?: unknown;
         };
         if (source.code === "40001") metrics.appendConflictCount += 1;
-        if (source.appendDispatched === true && source.code !== "40001")
+        if (
+          source.appendDispatched === true &&
+          (source.code === undefined ||
+            /^(08|ECONNRESET|ETIMEDOUT|EPIPE)/.test(String(source.code)))
+        )
           metrics.appendUnknownOutcomeCount += 1;
         callback(
           errorFrom(
