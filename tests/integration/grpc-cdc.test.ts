@@ -160,6 +160,89 @@ suite("gRPC to CDC", () => {
     expect(metrics).toContain("event_store_append_total");
   });
 
+  it("recovers an idempotent append after a crash boundary past PostgreSQL commit", async () => {
+    let crashOnce = true;
+    const previousAddress = process.env.GRPC_LISTEN_ADDRESS;
+    const previousHealthAddress = process.env.HTTP_LISTEN_ADDRESS;
+    process.env.GRPC_LISTEN_ADDRESS = "127.0.0.1:50063";
+    delete process.env.HTTP_LISTEN_ADDRESS;
+    const crashServer = await startServer({
+      hit: (point) => {
+        if (point !== "after_postgres_commit" || !crashOnce) return;
+        crashOnce = false;
+        throw Object.assign(new Error("test crash after PostgreSQL commit"), {
+          code: "ECONNRESET",
+          appendDispatched: true,
+        });
+      },
+    });
+    const definition = protoLoader.loadSync(
+      join(process.cwd(), "packages/contracts/proto/event_store.proto"),
+      { keepCase: true, longs: String, enums: String, defaults: false },
+    );
+    const service = (
+      grpc.loadPackageDefinition(definition) as unknown as {
+        eventstore: {
+          v1: { EventStoreService: grpc.ServiceClientConstructor };
+        };
+      }
+    ).eventstore.v1.EventStoreService;
+    const crashClient = new service(
+      "127.0.0.1:50063",
+      grpc.credentials.createInsecure(),
+    ) as AppendClient;
+    const requestId = uuidv7();
+    const request = {
+      request_id: requestId,
+      namespace: "orders",
+      aggregate_type: "Order",
+      aggregate_id: uuidv7(),
+      expected_revision: { no_stream: {} },
+      context: {
+        correlation_id: uuidv7(),
+        actor_json: Buffer.from(
+          JSON.stringify({ kind: "user", subjectRef: "usr_crash" }),
+        ),
+      },
+      events: [
+        {
+          event_name: "order.created",
+          schema_version: 1,
+          occurred_at: "2026-08-04T10:12:18.120Z",
+          payload_json: Buffer.from(JSON.stringify({ orderRef: "retry" })),
+        },
+      ],
+    };
+    const append = () =>
+      new Promise<Record<string, unknown>>((resolve, reject) =>
+        crashClient.AppendToStream(request, (error, value) =>
+          error === null ? resolve(value ?? {}) : reject(error),
+        ),
+      );
+    try {
+      await expect(append()).rejects.toMatchObject({
+        code: grpc.status.UNKNOWN,
+      });
+      await expect(append()).resolves.toMatchObject({ request_id: requestId });
+      const pool = await stack.pool();
+      try {
+        await expect(
+          pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM event_store.events WHERE request_id=$1",
+            [requestId],
+          ),
+        ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+      } finally {
+        await pool.end();
+      }
+    } finally {
+      crashClient.close();
+      await new Promise<void>((resolve) => crashServer.tryShutdown(resolve));
+      process.env.GRPC_LISTEN_ADDRESS = previousAddress;
+      process.env.HTTP_LISTEN_ADDRESS = previousHealthAddress;
+    }
+  }, 60_000);
+
   it("keeps a bounded durable append window after a Connect process crash", async () => {
     await stack.stopConnect();
     const pool = await stack.pool();

@@ -124,6 +124,16 @@ interface PutSnapshotRequest extends StreamRequest {
   };
 }
 
+/** Test-only deterministic boundaries; production start-up leaves this absent. */
+export type ServiceCrashPoint =
+  | "before_sql"
+  | "after_postgres_commit"
+  | "before_grpc_response_write";
+
+export interface ServiceTestHooks {
+  hit(point: ServiceCrashPoint): Promise<void> | void;
+}
+
 export function errorFrom(
   error: unknown,
   requestId?: string,
@@ -267,7 +277,9 @@ function parseAppendRequest(
   };
 }
 
-export async function startServer(): Promise<grpc.Server> {
+export async function startServer(
+  testHooks?: ServiceTestHooks,
+): Promise<grpc.Server> {
   const url = process.env.DATABASE_URL;
   const producerService = process.env.PRODUCER_SERVICE;
   const address = process.env.GRPC_LISTEN_ADDRESS ?? "0.0.0.0:50051";
@@ -432,9 +444,11 @@ export async function startServer(): Promise<grpc.Server> {
             new Error("critical append database principal is not configured"),
             { code: grpc.status.PERMISSION_DENIED },
           );
+        await testHooks?.hit("before_sql");
         const result = await appendStore.append(
           parseAppendRequest(call.request, producerService, trafficClass),
         );
+        await testHooks?.hit("after_postgres_commit");
         if (result.commitEpochMs !== undefined) {
           const commitMetadata = new grpc.Metadata();
           commitMetadata.set(
@@ -443,6 +457,7 @@ export async function startServer(): Promise<grpc.Server> {
           );
           call.sendMetadata(commitMetadata);
         }
+        await testHooks?.hit("before_grpc_response_write");
         callback(null, {
           request_id: result.requestId,
           previous_revision: result.previousRevision,
