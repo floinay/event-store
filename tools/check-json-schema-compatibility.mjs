@@ -32,6 +32,66 @@ function types(schema) {
   return new Set(Array.isArray(value) ? value : [value]);
 }
 
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function assertDoesNotNarrow(previous, next, label) {
+  for (const [minimum, maximum] of [
+    ["minimum", "maximum"],
+    ["exclusiveMinimum", "exclusiveMaximum"],
+    ["minLength", "maxLength"],
+    ["minItems", "maxItems"],
+    ["minProperties", "maxProperties"],
+  ]) {
+    if (
+      hasOwn(previous, minimum) &&
+      (!hasOwn(next, minimum) || next[minimum] <= previous[minimum])
+    )
+      continue;
+    if (hasOwn(previous, minimum))
+      throw new Error(`${label}: ${minimum} was tightened`);
+    if (hasOwn(next, minimum) && next[minimum] > 0)
+      throw new Error(`${label}: ${minimum} was added`);
+    if (
+      hasOwn(previous, maximum) &&
+      (!hasOwn(next, maximum) || next[maximum] >= previous[maximum])
+    )
+      continue;
+    if (hasOwn(previous, maximum))
+      throw new Error(`${label}: ${maximum} was tightened`);
+    if (hasOwn(next, maximum))
+      throw new Error(`${label}: ${maximum} was added`);
+  }
+  for (const keyword of ["pattern", "format", "multipleOf", "const"]) {
+    if (hasOwn(previous, keyword) && next[keyword] === previous[keyword])
+      continue;
+    if (hasOwn(previous, keyword))
+      throw new Error(`${label}: ${keyword} changed`);
+    if (hasOwn(next, keyword))
+      throw new Error(`${label}: ${keyword} was added`);
+  }
+  if (hasOwn(previous, "enum")) {
+    const nextValues = new Set((next.enum ?? []).map(JSON.stringify));
+    for (const value of previous.enum)
+      if (!nextValues.has(JSON.stringify(value)))
+        throw new Error(`${label}: enum value was removed`);
+  } else if (hasOwn(next, "enum")) {
+    throw new Error(`${label}: enum was added`);
+  }
+  for (const keyword of ["oneOf", "anyOf", "allOf"]) {
+    if (!hasOwn(previous, keyword)) {
+      if (hasOwn(next, keyword))
+        throw new Error(`${label}: ${keyword} was added`);
+      continue;
+    }
+    const nextBranches = new Set((next[keyword] ?? []).map(JSON.stringify));
+    for (const branch of previous[keyword])
+      if (!nextBranches.has(JSON.stringify(branch)))
+        throw new Error(`${label}: ${keyword} branch was removed or changed`);
+  }
+}
+
 function assertBackwardCompatible(previous, next, label) {
   for (const required of next.required ?? [])
     if (!(previous.required ?? []).includes(required))
@@ -49,6 +109,30 @@ function assertBackwardCompatible(previous, next, label) {
     for (const type of previousTypes)
       if (!nextTypes.has(type))
         throw new Error(`${label}: property ${name} changed type`);
+    assertDoesNotNarrow(previousProperty, nextProperty, `${label}.${name}`);
+    assertBackwardCompatible(
+      previousProperty,
+      nextProperty,
+      `${label}.${name}`,
+    );
+  }
+  assertDoesNotNarrow(previous, next, label);
+  if (previous.items !== undefined) {
+    if (next.items === undefined)
+      throw new Error(`${label}: items was removed`);
+    assertBackwardCompatible(previous.items, next.items, `${label}.items`);
+  }
+  if (
+    previous.additionalProperties !== undefined &&
+    typeof previous.additionalProperties === "object"
+  ) {
+    if (typeof next.additionalProperties !== "object")
+      throw new Error(`${label}: additionalProperties changed`);
+    assertBackwardCompatible(
+      previous.additionalProperties,
+      next.additionalProperties,
+      `${label}.additionalProperties`,
+    );
   }
   if (
     previous.additionalProperties === true &&
