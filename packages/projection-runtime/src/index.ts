@@ -22,6 +22,24 @@ export interface ProjectionIdentity {
   name: string;
   generationId: string;
 }
+
+/**
+ * Test-only deterministic failure points at durable projection boundaries.
+ * Production callers leave this undefined; a test hook may throw to model a
+ * process termination without replacing PostgreSQL or Kafka behaviour.
+ */
+export type ProjectionCrashPoint =
+  | "after_kafka_poll"
+  | "after_inbox_insert"
+  | "after_read_model_mutation"
+  | "after_checkpoint_update"
+  | "after_database_commit"
+  | "before_kafka_offset_commit"
+  | "after_kafka_offset_commit";
+
+export interface ProjectionCrashBarrier {
+  hit(point: ProjectionCrashPoint): Promise<void> | void;
+}
 export type ProjectionHandler = (
   client: PoolClient,
   event: StoredEvent,
@@ -228,6 +246,7 @@ export class ProjectionTransactionRunner {
     private readonly pool: Pool,
     private readonly identity: ProjectionIdentity,
     private readonly transform: ProjectionEventTransformer,
+    private readonly crashBarrier?: ProjectionCrashBarrier,
   ) {}
 
   async process(
@@ -338,6 +357,7 @@ export class ProjectionTransactionRunner {
             "event id was previously observed with another hash",
           );
       } else {
+        await this.crashBarrier?.hit("after_inbox_insert");
         const applied = apply(client, event, abort.signal);
         if (options.transactionTimeoutMs === undefined) await applied;
         else
@@ -354,6 +374,7 @@ export class ProjectionTransactionRunner {
               }, options.transactionTimeoutMs);
             }),
           ]);
+        await this.crashBarrier?.hit("after_read_model_mutation");
       }
       await client.query(
         `INSERT INTO projection_runtime.checkpoints(projection_name,generation_id,topic_name,partition_no,next_offset,last_event_id,updated_at)
@@ -369,7 +390,9 @@ export class ProjectionTransactionRunner {
           event.eventId,
         ],
       );
+      await this.crashBarrier?.hit("after_checkpoint_update");
       await client.query("COMMIT");
+      await this.crashBarrier?.hit("after_database_commit");
       return inserted.rowCount === 1 ? "processed" : "duplicate";
     } catch (error) {
       // transaction_timeout intentionally terminates the backend. Never place

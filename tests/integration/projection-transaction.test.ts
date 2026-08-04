@@ -150,6 +150,103 @@ suite("projection crash boundary", () => {
     ).toBe("1");
   });
 
+  it("exposes deterministic crash barriers at every PostgreSQL boundary", async () => {
+    await pool.query(
+      "CREATE SCHEMA projection_barrier; CREATE TABLE projection_barrier.events(generation_id uuid NOT NULL,event_id uuid NOT NULL,PRIMARY KEY(generation_id,event_id))",
+    );
+    for (const point of [
+      "after_inbox_insert",
+      "after_read_model_mutation",
+      "after_checkpoint_update",
+      "after_database_commit",
+    ] as const) {
+      const generationId = uuidv7();
+      const aggregateId = uuidv7();
+      const requestId = uuidv7();
+      await pool.query(
+        "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ($1,$2,'building',clock_timestamp())",
+        [`barrier-${point}`, generationId],
+      );
+      await store.append({
+        producerService: "orders-command",
+        namespace: "orders",
+        aggregateType: "Order",
+        aggregateId,
+        requestId,
+        expectedRevision: { kind: "no_stream" },
+        context: {
+          requestId,
+          correlationId: uuidv7(),
+          causationId: null,
+          actor: { kind: "user", subjectRef: "usr_barrier" },
+        },
+        events: [
+          {
+            eventName: "order.created",
+            schemaVersion: 1,
+            occurredAt: "2026-08-04T10:12:18.120Z",
+            payload: { point },
+          },
+        ],
+      });
+      const event = (
+        await store.readStream("orders", "Order", aggregateId)
+      )[0]!;
+      const value = canonicalJson(event);
+      const record = {
+        topic: "event-store.events.v1",
+        partition: 0,
+        offset: 0n,
+        key: `orders|Order|${aggregateId}`,
+        value,
+        headers: {
+          id: event.eventId,
+          type: event.eventName,
+          envelopeHash: createHash("sha256").update(value).digest("hex"),
+          namespace: event.namespace,
+          aggregateType: event.aggregateType,
+          streamRevision: event.streamRevision,
+        },
+      };
+      const runner = new ProjectionTransactionRunner(
+        pool,
+        { name: `barrier-${point}`, generationId },
+        (stored) => stored,
+        {
+          hit: (hit) => {
+            if (hit === point) throw new Error(`crash at ${hit}`);
+          },
+        },
+      );
+      await expect(
+        runner.process(record, async (client, stored) => {
+          await client.query(
+            "INSERT INTO projection_barrier.events(generation_id,event_id) VALUES ($1,$2)",
+            [generationId, stored.eventId],
+          );
+        }),
+      ).rejects.toThrow(`crash at ${point}`);
+      const [inbox, checkpoint, model] = await Promise.all([
+        pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM projection_runtime.inbox WHERE projection_name=$1 AND generation_id=$2",
+          [`barrier-${point}`, generationId],
+        ),
+        pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM projection_runtime.checkpoints WHERE projection_name=$1 AND generation_id=$2",
+          [`barrier-${point}`, generationId],
+        ),
+        pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM projection_barrier.events WHERE generation_id=$1",
+          [generationId],
+        ),
+      ]);
+      const expected = point === "after_database_commit" ? 1 : 0;
+      expect(inbox.rows[0]?.count).toBe(expected);
+      expect(checkpoint.rows[0]?.count).toBe(expected);
+      expect(model.rows[0]?.count).toBe(expected);
+    }
+  });
+
   it("cancels a blocked projection SQL transaction at its configured deadline", async () => {
     const generationId = uuidv7();
     const aggregateId = uuidv7();

@@ -1,5 +1,6 @@
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import type {
+  ProjectionCrashBarrier,
   ProjectionCheckpointStore,
   ProjectionFailureReporter,
   ProjectionHandler,
@@ -68,6 +69,7 @@ export class KafkaProjectionRunner {
     private readonly checkpointStore: ProjectionCheckpointStore,
     private readonly failureReporter: ProjectionFailureReporter,
     private readonly dlqTopic = "event-store.projection-dlq.v1",
+    private readonly crashBarrier?: ProjectionCrashBarrier,
   ) {}
 
   async start(): Promise<KafkaJS.Consumer> {
@@ -175,6 +177,7 @@ export class KafkaProjectionRunner {
         await assigned;
         messageLoop: for (const message of batch.messages) {
           assertCurrentAssignment();
+          await this.crashBarrier?.hit("after_kafka_poll");
           if (message.key === null || message.value === null) {
             pause();
             throw new Error("Kafka event record requires a key and value");
@@ -257,6 +260,7 @@ export class KafkaProjectionRunner {
             for (const commitDelay of projectionRetryDelaysMs) {
               assertCurrentAssignment();
               try {
+                await this.crashBarrier?.hit("before_kafka_offset_commit");
                 await consumer.commitOffsets([
                   {
                     topic,
@@ -269,6 +273,7 @@ export class KafkaProjectionRunner {
                   BigInt(message.offset) + 1n,
                 );
                 resolveOffset(message.offset);
+                await this.crashBarrier?.hit("after_kafka_offset_commit");
                 continue messageLoop;
               } catch (commitError) {
                 failure = commitError;
