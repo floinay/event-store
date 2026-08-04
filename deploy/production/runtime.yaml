@@ -117,9 +117,8 @@ spec:
               }
             - {
                 name: VALUE_CONVERTER,
-                value: org.apache.kafka.connect.json.JsonConverter,
+                value: org.apache.kafka.connect.storage.StringConverter,
               }
-            - { name: VALUE_CONVERTER_SCHEMAS_ENABLE, value: "false" }
             - {
                 name: CONNECT_HEADER_CONVERTER,
                 value: org.apache.kafka.connect.storage.SimpleHeaderConverter,

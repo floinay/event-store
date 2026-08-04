@@ -302,10 +302,18 @@ EOF
         OFFSET_STORAGE_REPLICATION_FACTOR: "1",
         STATUS_STORAGE_REPLICATION_FACTOR: "1",
         KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter",
-        VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter",
-        VALUE_CONVERTER_SCHEMAS_ENABLE: "false",
+        VALUE_CONVERTER: "org.apache.kafka.connect.storage.StringConverter",
+        HEADER_CONVERTER:
+          "org.apache.kafka.connect.storage.SimpleHeaderConverter",
         EXACTLY_ONCE_SOURCE_SUPPORT: "enabled",
         CONNECT_EXACTLY_ONCE_SOURCE_SUPPORT: "enabled",
+        TOPIC_CREATION_ENABLE: "false",
+        PRODUCER_ACKS: "all",
+        PRODUCER_ENABLE_IDEMPOTENCE: "true",
+        PRODUCER_LINGER_MS: "0",
+        PRODUCER_COMPRESSION_TYPE: "lz4",
+        PRODUCER_MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION: "5",
+        CONSUMER_ISOLATION_LEVEL: "read_committed",
       })
       .withNetwork(this.#network)
       .withNetworkAliases("connect")
@@ -372,7 +380,7 @@ EOF
           "transforms.outbox.route.by.field": "topic_route",
           "transforms.outbox.route.topic.regex": "(.*)",
           "transforms.outbox.route.topic.replacement": "$1.events.v1",
-          "transforms.outbox.table.expand.json.payload": "true",
+          "transforms.outbox.table.expand.json.payload": "false",
           "transforms.outbox.table.op.invalid.behavior": "fatal",
           "transforms.outbox.route.tombstone.on.empty.payload": "false",
           "transforms.outbox.table.fields.additional.placement":
@@ -467,7 +475,7 @@ EOF
           "transforms.outbox.route.by.field": "topic_route",
           "transforms.outbox.route.topic.regex": "(.*)",
           "transforms.outbox.route.topic.replacement": "$1.events.v1",
-          "transforms.outbox.table.expand.json.payload": "true",
+          "transforms.outbox.table.expand.json.payload": "false",
           "transforms.outbox.table.op.invalid.behavior": "fatal",
           "transforms.outbox.table.fields.additional.placement":
             "event_id:header:id,event_name:header:type,envelope_sha256:header:envelopeHash,namespace:header:namespace,aggregate_type:header:aggregateType,stream_revision:header:streamRevision",
