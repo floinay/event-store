@@ -73,6 +73,8 @@ export function errorFrom(
     [code, machineCode] = [grpc.status.INVALID_ARGUMENT, "validation_failed"];
   else if (sqlCode === "40001")
     [code, machineCode] = [grpc.status.ABORTED, "expected_revision_conflict"];
+  else if (sqlCode === "57014")
+    [code, machineCode] = [grpc.status.DEADLINE_EXCEEDED, "deadline_exceeded"];
   else if (sqlCode === "23505")
     [code, machineCode] = [grpc.status.ALREADY_EXISTS, "idempotency_conflict"];
   else if (sqlCode === "XX001")

@@ -33,6 +33,19 @@ describe("gRPC error mapping", () => {
     });
   });
 
+  it("maps PostgreSQL statement timeout to DEADLINE_EXCEEDED", () => {
+    const error = errorFrom(
+      Object.assign(new Error("canceling statement due to statement timeout"), {
+        code: "57014",
+      }),
+    );
+    expect(error.code).toBe(grpc.status.DEADLINE_EXCEEDED);
+    expect(JSON.parse(error.details)).toMatchObject({
+      code: "deadline_exceeded",
+      retriable: false,
+    });
+  });
+
   it("maps a direct PII validation failure to INVALID_ARGUMENT", () => {
     expect(
       errorFrom(
