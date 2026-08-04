@@ -33,7 +33,12 @@ interface AppendClient extends grpc.Client {
     callback: (
       error: grpc.ServiceError | null,
       response?: {
-        events?: { event_id?: string; eventId?: string }[];
+        events?: {
+          event_id?: string;
+          eventId?: string;
+          stream_revision?: string;
+          streamRevision?: string;
+        }[];
       },
     ) => void,
   ): grpc.ClientUnaryCall;
@@ -254,6 +259,21 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
             payloadBytes,
             String(current),
           );
+          const expectedRevisions = Array.from(
+            { length: batchSize },
+            (_, eventIndex) =>
+              (stream.nextRevision + BigInt(eventIndex + 1)).toString(),
+          );
+          if (
+            result.streamRevisions.length !== expectedRevisions.length ||
+            result.streamRevisions.some(
+              (revision, eventIndex) =>
+                revision !== expectedRevisions[eventIndex],
+            )
+          )
+            throw new Error(
+              `append returned non-contiguous stream revisions: ${result.streamRevisions.join(",")}`,
+            );
           stream.nextRevision += BigInt(batchSize);
           for (const eventId of result.eventIds)
             committed.set(eventId, result.commitEpochMs);
@@ -353,7 +373,11 @@ function append(
   eventsPerAppend: number,
   bytesPerPayload: number,
   index: string,
-): Promise<{ eventIds: string[]; commitEpochMs: number }> {
+): Promise<{
+  eventIds: string[];
+  streamRevisions: string[];
+  commitEpochMs: number;
+}> {
   return new Promise((resolve, reject) => {
     let commitEpochMs: number | undefined;
     const call = client.AppendToStream(
@@ -392,9 +416,13 @@ function append(
         const eventIds = (response?.events ?? []).map(
           (event) => event.event_id ?? event.eventId,
         );
+        const streamRevisions = (response?.events ?? []).map(
+          (event) => event.stream_revision ?? event.streamRevision,
+        );
         if (
           eventIds.length !== eventsPerAppend ||
           eventIds.some((eventId) => eventId === undefined) ||
+          streamRevisions.some((revision) => revision === undefined) ||
           commitEpochMs === undefined
         ) {
           reject(
@@ -404,7 +432,11 @@ function append(
           );
           return;
         }
-        resolve({ eventIds: eventIds as string[], commitEpochMs });
+        resolve({
+          eventIds: eventIds as string[],
+          streamRevisions: streamRevisions as string[],
+          commitEpochMs,
+        });
       },
     );
     call.once("metadata", (metadata) => {
