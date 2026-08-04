@@ -25,6 +25,7 @@ jobs:
           tests/integration/projection-transaction.test.ts
           tests/integration/projection-recovery.test.ts
           tests/integration/consumer-postgres-recovery.test.ts
+          tests/integration/consumer-kafka-crash-recovery.test.ts
           tests/integration/grpc-cdc.test.ts
           tests/integration/cdc.test.ts
           tests/integration/connect-network-recovery.test.ts
