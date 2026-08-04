@@ -36,7 +36,7 @@ describe("live Connect worker", () => {
   it("keeps the canonical envelope as an unquoted JSON record", async () => {
     const worker = await readFile("deploy/connect/worker.properties", "utf8");
     expect(worker).toContain(
-      "value.converter=org.apache.kafka.connect.storage.StringConverter",
+      "value.converter=org.apache.kafka.connect.json.JsonConverter",
     );
   });
 });

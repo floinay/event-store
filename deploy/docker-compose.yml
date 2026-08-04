@@ -1,6 +1,9 @@
 services:
   postgres:
     image: postgres:18.4-bookworm
+    networks:
+      default:
+        aliases: [postgres-primary]
     command:
       [
         "postgres",
