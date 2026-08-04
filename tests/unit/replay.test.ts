@@ -17,6 +17,8 @@ describe("replay connector", () => {
       "transforms.outbox.table.field.event.type": "event_name",
       "transforms.outbox.table.field.event.payload": "event_envelope_kafka",
       "transforms.outbox.table.field.event.timestamp": "recorded_at_kafka",
+      "exactly.once.support": "required",
+      "transaction.boundary": "poll",
       "transforms.outbox.table.expand.json.payload": "false",
       "transforms.outbox.route.topic.replacement":
         "event-store.replay.aug-2026.v1",

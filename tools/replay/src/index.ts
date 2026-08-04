@@ -536,6 +536,8 @@ export function replayConnectorConfig(
     "snapshot.select.statement.overrides": "event_store.events",
     "snapshot.select.statement.overrides.event_store.events":
       "SELECT * FROM event_store.events ORDER BY event_number",
+    "exactly.once.support": "required",
+    "transaction.boundary": "poll",
     transforms: "outbox",
     "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
     "transforms.outbox.table.field.event.id": "event_id",
