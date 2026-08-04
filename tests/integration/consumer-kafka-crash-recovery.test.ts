@@ -214,6 +214,164 @@ suite("projection consumer Kafka crash recovery", () => {
     90_000,
   );
 
+  it("aborts an open projection transaction during consumer-group rebalance", async () => {
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [stack.kafkaBroker()] },
+    });
+    const topic = `consumer-rebalance-${uuidv7()}`;
+    const admin = kafka.admin();
+    await admin.connect();
+    await admin.createTopics({
+      topics: [{ topic, numPartitions: 1, replicationFactor: 1 }],
+    });
+    await admin.disconnect();
+    const generationId = uuidv7();
+    const projectionName = `rebalance-${generationId}`;
+    const identity = { name: projectionName, generationId };
+    await pool.query(
+      "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ($1,$2,'building',clock_timestamp())",
+      [projectionName, generationId],
+    );
+    let entered!: () => void;
+    let aborted!: () => void;
+    const handlerEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const handlerAborted = new Promise<void>((resolve) => {
+      aborted = resolve;
+    });
+    const blockedRunner = new KafkaProjectionRunner(
+      {
+        brokers: [stack.kafkaBroker()],
+        groupId: `consumer-rebalance-${generationId}`,
+        topic,
+      },
+      new ProjectionTransactionRunner(pool, identity, (event) => event),
+      async (_client, _event, signal) => {
+        entered();
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted();
+              reject(new Error("projection handler aborted on rebalance"));
+            },
+            { once: true },
+          );
+        });
+      },
+      new ProjectionCheckpointStore(pool, identity),
+      new ProjectionFailureReporter(pool, identity),
+    );
+    const replacementRunner = new KafkaProjectionRunner(
+      {
+        brokers: [stack.kafkaBroker()],
+        groupId: `consumer-rebalance-${generationId}`,
+        topic,
+      },
+      new ProjectionTransactionRunner(pool, identity, (event) => event),
+      async (client, event) => {
+        await client.query(
+          "INSERT INTO consumer_kafka_crash.events(projection_name,event_id) VALUES ($1,$2)",
+          [projectionName, event.eventId],
+        );
+        await client.query(
+          `INSERT INTO consumer_kafka_crash.handler_calls(projection_name,event_id,calls)
+           VALUES ($1,$2,1)
+           ON CONFLICT (projection_name,event_id) DO UPDATE SET calls=consumer_kafka_crash.handler_calls.calls+1`,
+          [projectionName, event.eventId],
+        );
+      },
+      new ProjectionCheckpointStore(pool, identity),
+      new ProjectionFailureReporter(pool, identity),
+    );
+    const producer = kafka.producer({
+      kafkaJS: { idempotent: true, acks: -1 },
+    });
+    let blockedConsumer: KafkaJS.Consumer | undefined;
+    let replacementConsumer: KafkaJS.Consumer | undefined;
+    try {
+      blockedConsumer = await blockedRunner.start();
+      await producer.connect();
+      const event = {
+        eventId: uuidv7(),
+        namespace: "orders",
+        aggregateType: "Order",
+        aggregateId: uuidv7(),
+        streamRevision: "1",
+        eventNumber: "1",
+        eventName: "order.created",
+        schemaVersion: 1,
+        occurredAt: "2026-08-04T10:12:18.120Z",
+        recordedAt: "2026-08-04T10:12:18.120Z",
+        producerService: "orders-command",
+        context: {
+          requestId: uuidv7(),
+          correlationId: uuidv7(),
+          causationId: null,
+          actor: { kind: "service" as const, subjectRef: "rebalance-test" },
+        },
+        payload: { kind: "rebalance" },
+      };
+      const value = canonicalJson(event);
+      await producer.send({
+        topic,
+        messages: [
+          {
+            key: partitionKey(event),
+            value,
+            headers: {
+              id: event.eventId,
+              type: event.eventName,
+              envelopeHash: createHash("sha256").update(value).digest("hex"),
+              namespace: event.namespace,
+              aggregateType: event.aggregateType,
+              streamRevision: event.streamRevision,
+            },
+          },
+        ],
+      });
+      await handlerEntered;
+      const replacementStart = replacementRunner.start();
+      const started = Date.now();
+      await blockedConsumer.disconnect();
+      blockedConsumer = undefined;
+      await expect(
+        Promise.race([
+          handlerAborted,
+          new Promise<void>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("rebalance did not abort transaction")),
+              10_000,
+            ),
+          ),
+        ]),
+      ).resolves.toBeUndefined();
+      expect(Date.now() - started).toBeLessThanOrEqual(10_000);
+      replacementConsumer = await replacementStart;
+      await eventually(async () => {
+        const result = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM consumer_kafka_crash.events WHERE projection_name=$1",
+          [projectionName],
+        );
+        return result.rows[0]?.count === 1;
+      });
+      await expect(
+        pool.query<{ calls: number }>(
+          "SELECT calls FROM consumer_kafka_crash.handler_calls WHERE projection_name=$1 AND event_id=$2",
+          [projectionName, event.eventId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ calls: 1 }] });
+      await expect(
+        new ProjectionCheckpointStore(pool, identity).nextOffset(topic, 0),
+      ).resolves.toBe(1n);
+    } finally {
+      await producer.disconnect().catch(() => undefined);
+      await blockedConsumer?.disconnect().catch(() => undefined);
+      await replacementConsumer?.disconnect().catch(() => undefined);
+    }
+  }, 90_000);
+
   it.each([
     "after_kafka_poll",
     "before_database_connection",
