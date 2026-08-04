@@ -238,13 +238,8 @@ export class KafkaProjectionRunner {
             readCommittedGapAttempts.delete(attempt);
           }
           let failure: unknown;
-          const processingDeadline = Date.now() + 10_000;
           for (const delay of projectionRetryDelaysMs) {
             assertCurrentAssignment();
-            if (Date.now() >= processingDeadline)
-              throw new Error(
-                `projection retry exceeded 10s revoke bound for ${topic}/${partition}`,
-              );
             try {
               await withHeartbeats(
                 () =>
@@ -256,24 +251,11 @@ export class KafkaProjectionRunner {
               );
             } catch (error) {
               failure = error;
-              await withHeartbeats(
-                () =>
-                  wait(
-                    Math.min(
-                      delay,
-                      Math.max(0, processingDeadline - Date.now()),
-                    ),
-                  ),
-                heartbeat,
-              );
+              await withHeartbeats(() => wait(delay), heartbeat);
               continue;
             }
             for (const commitDelay of projectionRetryDelaysMs) {
               assertCurrentAssignment();
-              if (Date.now() >= processingDeadline)
-                throw new Error(
-                  `projection commit retry exceeded 10s revoke bound for ${topic}/${partition}`,
-                );
               try {
                 await consumer.commitOffsets([
                   {
@@ -290,16 +272,7 @@ export class KafkaProjectionRunner {
                 continue messageLoop;
               } catch (commitError) {
                 failure = commitError;
-                await withHeartbeats(
-                  () =>
-                    wait(
-                      Math.min(
-                        commitDelay,
-                        Math.max(0, processingDeadline - Date.now()),
-                      ),
-                    ),
-                  heartbeat,
-                );
+                await withHeartbeats(() => wait(commitDelay), heartbeat);
               }
             }
             // The DB checkpoint is durable. Retrying this record as a duplicate is
