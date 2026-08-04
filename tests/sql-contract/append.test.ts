@@ -210,6 +210,9 @@ suite("append SQL contract", () => {
       "telephoneNumber",
       "socialSecurityNumber",
       "birthDate",
+      "bankAccount",
+      "accountNumber",
+      "iban",
     ])
       await expect(
         pool.query(

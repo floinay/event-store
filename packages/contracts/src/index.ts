@@ -69,7 +69,7 @@ const structuralKey = new Set([
   "subjectref",
 ]);
 const forbiddenPiiKey =
-  /(?:name|firstname|lastname|email|phone|phonenumber|telephone|telephonenumber|address|token|password|credential|secret|cardnumber|pan|cvv|ssn|socialsecuritynumber|dateofbirth|birthdate|dob)$/i;
+  /(?:name|firstname|lastname|email|phone|phonenumber|telephone|telephonenumber|address|token|password|credential|secret|cardnumber|pan|cvv|iban|bic|swift|bankaccount|accountnumber|routingnumber|ssn|socialsecuritynumber|dateofbirth|birthdate|dob)$/i;
 
 function normalizedKey(key: string): string {
   return key.replaceAll(/[^a-z0-9]/gi, "").toLowerCase();

@@ -33,6 +33,9 @@ describe("event contracts", () => {
       "telephoneNumber",
       "socialSecurityNumber",
       "birthDate",
+      "bankAccount",
+      "accountNumber",
+      "iban",
     ])
       expect(() => assertNoDirectPii({ [key]: "secret" })).toThrow(
         "direct PII",
