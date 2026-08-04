@@ -36,6 +36,9 @@ describe("production HA topology", () => {
     expect(runtime).toContain("HTTP_LISTEN_ADDRESS");
     expect(runtime).toContain("GRPC_TLS_CERT_PEM");
     expect(runtime).toContain("event-store-grpc-tls");
+    expect(runtime).toContain("CRITICAL_DATABASE_URL");
+    expect(runtime).toContain("CRITICAL_CLIENT_SUBJECTS");
+    expect(runtime).toContain("event-store-critical-app");
     expect(runtime).toContain("CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR");
     expect(runtime).toContain("CONNECT_CONSUMER_ISOLATION_LEVEL");
     expect(runtime).toContain("CONNECT_PRODUCER_COMPRESSION_TYPE");

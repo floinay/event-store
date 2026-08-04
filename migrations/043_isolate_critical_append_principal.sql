@@ -54,3 +54,4 @@ END $$;
 
 REVOKE ALL ON FUNCTION event_store.append_v1_critical(text,text,text,uuid,uuid,text,bigint,jsonb,jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION event_store.append_v1_critical(text,text,text,uuid,uuid,text,bigint,jsonb,jsonb) TO event_store_critical_app;
+GRANT EXECUTE ON FUNCTION event_store.assert_append_cdc_ready(bigint,boolean) TO event_store_critical_app;
