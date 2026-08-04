@@ -92,8 +92,8 @@ suite("logical slot-loss recovery", () => {
       return slot.rows[0]?.active === true;
     });
     await pool.query(
-      "SELECT event_store.activate_recovery_cdc_slot($1,$2)",
-      [recoverySlot, (8n * 1024n ** 3n).toString()],
+      "SELECT event_store.activate_recovery_cdc_slot($1,$2,$3)",
+      [recoverySlot, recoveryConnector, (8n * 1024n ** 3n).toString()],
     );
     await append(store, afterRequestId, "after-slot-recovery");
     await observed;
@@ -103,17 +103,21 @@ suite("logical slot-loss recovery", () => {
     expect(deliveries.get(afterRequestId)).toBeGreaterThanOrEqual(1);
     await expect(
       pool.query(
-        "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
+        "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
       ),
-    ).resolves.toMatchObject({ rows: [{ cdc_slot_name: recoverySlot }] });
+    ).resolves.toMatchObject({
+      rows: [{ cdc_slot_name: recoverySlot, cdc_connector_name: recoveryConnector }],
+    });
     await pool.query("SELECT event_store.enable_append_admission($1)", [
       (8n * 1024n ** 3n).toString(),
     ]);
     await expect(
       pool.query(
-        "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
+        "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
       ),
-    ).resolves.toMatchObject({ rows: [{ cdc_slot_name: recoverySlot }] });
+    ).resolves.toMatchObject({
+      rows: [{ cdc_slot_name: recoverySlot, cdc_connector_name: recoveryConnector }],
+    });
     await expect(
       fetch(`${stack.connectUrl}/connectors/${recoveryConnector}/status`),
     ).resolves.toMatchObject({ status: 200 });

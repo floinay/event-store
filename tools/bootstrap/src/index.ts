@@ -65,7 +65,10 @@ async function verifyTopics(
   }
 }
 
-async function verifyCdcReadiness(database: Client): Promise<void> {
+async function verifyCdcReadiness(
+  database: Client,
+  slotName: string,
+): Promise<void> {
   const publication = await database.query<{
     schema_name: string;
     table_name: string;
@@ -87,16 +90,17 @@ async function verifyCdcReadiness(database: Client): Promise<void> {
     failover: boolean;
     invalidationReason: string | null;
   }>(
-    "SELECT true AS exists, active, failover, invalidation_reason AS \"invalidationReason\" FROM pg_replication_slots WHERE slot_name = 'event_store_live'",
+    "SELECT true AS exists, active, failover, invalidation_reason AS \"invalidationReason\" FROM pg_replication_slots WHERE slot_name = $1",
+    [slotName],
   );
   const row = slot.rows[0];
   if (row === undefined || row.invalidationReason !== null)
-    throw new Error("event_store_live logical replication slot is unavailable");
+    throw new Error(`${slotName} logical replication slot is unavailable`);
   if (!row.active)
-    throw new Error("event_store_live logical replication slot is not active");
+    throw new Error(`${slotName} logical replication slot is not active`);
   if (!row.failover)
     throw new Error(
-      "event_store_live logical replication slot is not failover-enabled",
+      `${slotName} logical replication slot is not failover-enabled`,
     );
 }
 
@@ -129,13 +133,32 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   });
   await database.connect();
   try {
-    const slot = await database.query<{ exists: boolean }>(
-      "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name='event_store_live') AS exists",
+    const runtime = await database.query<{
+      cdc_slot_name: string;
+      cdc_connector_name: string;
+    }>(
+      "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
     );
+    const cdcSlotName = runtime.rows[0]?.cdc_slot_name ?? "event_store_live";
+    const cdcConnectorName =
+      runtime.rows[0]?.cdc_connector_name ?? options.connectorName;
+    const adoptedRecovery =
+      cdcSlotName !== "event_store_live" ||
+      cdcConnectorName !== options.connectorName;
+    const slot = await database.query<{ exists: boolean }>(
+      "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name=$1) AS exists",
+      [cdcSlotName],
+    );
+    if (!slot.rows[0]?.exists && adoptedRecovery) {
+      throw new Error(
+        `adopted recovery slot ${cdcSlotName} is missing; refusing to replace it`,
+      );
+    }
     if (!slot.rows[0]?.exists) {
       try {
         await database.query(
-          "SELECT pg_create_logical_replication_slot('event_store_live', 'pgoutput', false, false, true)",
+          "SELECT pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
+          [cdcSlotName],
         );
       } catch (error) {
         if ((error as { code?: string }).code !== "42710") throw error;
@@ -147,23 +170,41 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   } finally {
     await database.end();
   }
-  const response = await fetch(
-    `${options.connectUrl}/connectors/${options.connectorName}/config`,
-    {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(options.connectorConfig),
-    },
-  );
-  if (!response.ok)
-    throw new Error(`connector registration failed: ${await response.text()}`);
-  await waitForConnector(options.connectUrl, options.connectorName);
+  const ownership = new Client({ connectionString: options.replicationDatabaseUrl });
+  await ownership.connect();
+  let cdcSlotName: string;
+  let cdcConnectorName: string;
+  try {
+    const runtime = await ownership.query<{
+      cdc_slot_name: string;
+      cdc_connector_name: string;
+    }>(
+      "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
+    );
+    cdcSlotName = runtime.rows[0]?.cdc_slot_name ?? "event_store_live";
+    cdcConnectorName = runtime.rows[0]?.cdc_connector_name ?? options.connectorName;
+  } finally {
+    await ownership.end();
+  }
+  if (cdcConnectorName === options.connectorName) {
+    const response = await fetch(
+      `${options.connectUrl}/connectors/${options.connectorName}/config`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(options.connectorConfig),
+      },
+    );
+    if (!response.ok)
+      throw new Error(`connector registration failed: ${await response.text()}`);
+  }
+  await waitForConnector(options.connectUrl, cdcConnectorName);
   const readinessDatabase = new Client({
     connectionString: options.replicationDatabaseUrl,
   });
   await readinessDatabase.connect();
   try {
-    await verifyCdcReadiness(readinessDatabase);
+    await verifyCdcReadiness(readinessDatabase, cdcSlotName);
   } finally {
     await readinessDatabase.end();
   }
