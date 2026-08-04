@@ -14,7 +14,8 @@ export interface KafkaProjectionConfig {
   topic: string;
 }
 
-function rawEnvelope(value: Buffer): unknown {
+function rawEnvelope(value: Buffer | null): unknown {
+  if (value === null) return { rawBase64: null };
   try {
     return JSON.parse(value.toString());
   } catch {
@@ -178,10 +179,8 @@ export class KafkaProjectionRunner {
         messageLoop: for (const message of batch.messages) {
           assertCurrentAssignment();
           await this.crashBarrier?.hit("after_kafka_poll");
-          if (message.key === null || message.value === null) {
-            pause();
-            throw new Error("Kafka event record requires a key and value");
-          }
+          const missingKeyOrValue =
+            message.key === null || message.value === null;
           const headers = Object.fromEntries(
             Object.entries(message.headers ?? {}).map(([key, value]) => [
               key,
@@ -192,9 +191,9 @@ export class KafkaProjectionRunner {
             topic,
             partition,
             offset: BigInt(message.offset),
-            key: message.key.toString(),
+            key: message.key?.toString() ?? "",
             headers,
-            value: message.value,
+            value: message.value ?? Buffer.alloc(0),
           };
           if (expectedOffsets.get(`${topic}/${partition}`) === undefined)
             await alignAssignment();
@@ -244,6 +243,8 @@ export class KafkaProjectionRunner {
           for (const delay of projectionRetryDelaysMs) {
             assertCurrentAssignment();
             try {
+              if (missingKeyOrValue)
+                throw new Error("Kafka event record requires a key and value");
               await withHeartbeats(
                 () =>
                   this.transactionRunner.process(record, this.apply, {
