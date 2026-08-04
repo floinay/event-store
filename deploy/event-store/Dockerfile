@@ -18,4 +18,4 @@ COPY --from=build /app/tools/bootstrap/dist ./tools/bootstrap/dist
 COPY migrations ./migrations
 COPY deploy/connector ./deploy/connector
 COPY deploy/kafka ./deploy/kafka
-CMD ["node", "apps/event-store-service/dist/index.js"]
+CMD ["sh", "-ec", "node tools/bootstrap/dist/index.js && exec node apps/event-store-service/dist/index.js"]
