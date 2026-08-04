@@ -38,6 +38,7 @@ describe("production HA topology", () => {
     expect(runtime).toContain("event-store-grpc-tls");
     expect(runtime).toContain("CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR");
     expect(runtime).toContain("CONNECT_CONSUMER_ISOLATION_LEVEL");
+    expect(runtime).toContain("CONNECT_PRODUCER_COMPRESSION_TYPE");
     expect(preflight).toContain("assert_failover_candidate('event_store_live')");
     expect(bootstrap).toContain("event-store-kafka-kafka-bootstrap:9092");
     expect(bootstrap).toContain("http://event-store-connect:8083");

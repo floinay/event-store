@@ -100,6 +100,7 @@ spec:
             - { name: CONNECT_PRODUCER_ACKS, value: all }
             - { name: CONNECT_PRODUCER_ENABLE_IDEMPOTENCE, value: "true" }
             - { name: CONNECT_PRODUCER_LINGER_MS, value: "0" }
+            - { name: CONNECT_PRODUCER_COMPRESSION_TYPE, value: lz4 }
             - { name: CONNECT_PRODUCER_MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, value: "5" }
             - { name: CONNECT_CONSUMER_ISOLATION_LEVEL, value: read_committed }
             - { name: CONNECT_CONFIG_PROVIDERS, value: file }
