@@ -811,6 +811,7 @@ suite("gRPC to CDC", () => {
         code: grpc.status.RESOURCE_EXHAUSTED,
       });
       await stack.restartConnect();
+      process.env.CONNECT_URL = stack.connectUrl;
       await eventually(async () => {
         const missing = await pool.query<{ count: number }>(
           `SELECT count(*)::int AS count FROM event_store.events e

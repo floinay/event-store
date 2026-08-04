@@ -450,7 +450,6 @@ export async function startServer(
     if (process.env.NODE_ENV === "test" && processCrashPoint === point)
       process.kill(process.pid, "SIGKILL");
   };
-  const connectUrl = process.env.CONNECT_URL;
   const connectMetricsPort = process.env.CONNECT_METRICS_PORT;
   const kafkaBrokers = process.env.KAFKA_BROKERS?.split(",");
   const kafkaTopic = process.env.KAFKA_LIVE_TOPIC ?? "event-store.events.v1";
@@ -486,6 +485,7 @@ export async function startServer(
     await pool.query("SELECT event_store.assert_cdc_delivery_ready($1)", [
       walBudget,
     ]);
+    const connectUrl = process.env.CONNECT_URL;
     if (connectUrl !== undefined) {
       const connector = await pool.query<{
         cdc_connector_name: string;
