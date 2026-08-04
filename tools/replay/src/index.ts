@@ -716,29 +716,23 @@ export async function startRecovery(
   const appendPool = new Pool({ connectionString: options.appendDatabaseUrl });
   const slotName = recoverySlotName(options.identity.replayId);
   const connectorName = recoveryConnectorName(options.identity.replayId);
+  const connectorConfig = recoveryConnectorConfig(
+    options.identity.replayId,
+    options.connectorDatabase,
+  );
   try {
-    await coordinatorPool.query(
-      "SELECT pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
-      [slotName],
+    await ensureRecoverySlot(coordinatorPool, slotName);
+    await ensureRecoveryConnector(
+      options.connectorUrl,
+      connectorName,
+      connectorConfig,
     );
-    const response = await fetch(
-      `${options.connectorUrl}/connectors/${connectorName}/config`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(
-          recoveryConnectorConfig(
-            options.identity.replayId,
-            options.connectorDatabase,
-          ),
-        ),
-      },
+    await waitForRecoveryConnector(
+      coordinatorPool,
+      options.connectorUrl,
+      connectorName,
+      slotName,
     );
-    if (!response.ok)
-      throw new Error(
-        `recovery connector creation failed: ${await response.text()}`,
-      );
-    await waitForConnector(options.connectorUrl, connectorName);
     return await appendReplayBarriers(
       new PostgresEventStore(appendPool),
       options.identity.replayId,
@@ -749,15 +743,108 @@ export async function startRecovery(
   }
 }
 
-async function waitForConnector(
+async function ensureRecoverySlot(pool: Pool, slotName: string): Promise<void> {
+  const existing = await pool.query<{
+    plugin: string;
+    failover: boolean;
+    temporary: boolean;
+    invalidation_reason: string | null;
+    restart_lsn: string | null;
+  }>(
+    `SELECT plugin,failover,temporary,invalidation_reason,restart_lsn::text
+       FROM pg_replication_slots WHERE slot_name=$1`,
+    [slotName],
+  );
+  if (existing.rows[0] === undefined) {
+    try {
+      await pool.query(
+        "SELECT pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
+        [slotName],
+      );
+    } catch (error) {
+      if ((error as { code?: string }).code !== "42710") throw error;
+    }
+  }
+  const slot = await pool.query<{
+    plugin: string;
+    failover: boolean;
+    temporary: boolean;
+    invalidation_reason: string | null;
+    restart_lsn: string | null;
+  }>(
+    `SELECT plugin,failover,temporary,invalidation_reason,restart_lsn::text
+       FROM pg_replication_slots WHERE slot_name=$1`,
+    [slotName],
+  );
+  const value = slot.rows[0];
+  if (
+    value === undefined ||
+    value.plugin !== "pgoutput" ||
+    value.failover !== true ||
+    value.temporary !== false ||
+    value.invalidation_reason !== null ||
+    value.restart_lsn === null
+  )
+    throw new Error("existing recovery slot is not safe to resume");
+}
+
+function assertRecoveryConnectorConfig(
+  actual: Record<string, string>,
+  expected: Record<string, string>,
+): void {
+  for (const [key, value] of Object.entries(expected))
+    if (actual[key] !== value)
+      throw new Error("existing recovery connector configuration is unsafe");
+}
+
+async function ensureRecoveryConnector(
   connectorUrl: string,
   connectorName: string,
+  config: Record<string, string>,
+): Promise<void> {
+  const existing = await fetch(
+    `${connectorUrl}/connectors/${connectorName}/config`,
+  );
+  if (existing.ok) {
+    assertRecoveryConnectorConfig(
+      (await existing.json()) as Record<string, string>,
+      config,
+    );
+    return;
+  }
+  if (existing.status !== 404)
+    throw new Error(
+      `recovery connector lookup failed: ${await existing.text()}`,
+    );
+  const created = await fetch(
+    `${connectorUrl}/connectors/${connectorName}/config`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(config),
+    },
+  );
+  if (!created.ok)
+    throw new Error(
+      `recovery connector creation failed: ${await created.text()}`,
+    );
+}
+
+async function waitForRecoveryConnector(
+  pool: Pool,
+  connectorUrl: string,
+  connectorName: string,
+  slotName: string,
 ): Promise<void> {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
-    const response = await fetch(
-      `${connectorUrl}/connectors/${connectorName}/status`,
-    );
+    const [response, slot] = await Promise.all([
+      fetch(`${connectorUrl}/connectors/${connectorName}/status`),
+      pool.query<{ active: boolean }>(
+        "SELECT active FROM pg_replication_slots WHERE slot_name=$1",
+        [slotName],
+      ),
+    ]);
     if (response.ok) {
       const status = (await response.json()) as {
         connector?: { state?: string };
@@ -766,13 +853,14 @@ async function waitForConnector(
       if (
         status.connector?.state === "RUNNING" &&
         status.tasks?.length === 1 &&
-        status.tasks[0]?.state === "RUNNING"
+        status.tasks[0]?.state === "RUNNING" &&
+        slot.rows[0]?.active === true
       )
         return;
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  throw new Error(`recovery connector ${connectorName} did not become RUNNING`);
+  throw new Error(`recovery connector ${connectorName} did not become ready`);
 }
 
 /** Recovery CDC streams a full snapshot and then canonical live events. */

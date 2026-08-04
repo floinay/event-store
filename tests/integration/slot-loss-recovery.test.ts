@@ -14,6 +14,8 @@ import {
 import {
   RecoveryCutoverCoordinator,
   appendReplayBarriers,
+  recoverySlotName,
+  startRecovery,
 } from "@event-store/replay";
 import { UpcasterRegistry } from "@event-store/upcasting";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
@@ -37,6 +39,38 @@ suite("logical slot-loss recovery", () => {
     await pool?.end();
     await stack.stop();
   }, 60_000);
+
+  it("resumes recovery start after slot and connector creation", async () => {
+    const recoveryId = `resume-${uuidv7().replaceAll("-", "").slice(-12)}`;
+    const options = {
+      identity: {
+        projectionName: "slot-loss-recovery-resume",
+        generationId: uuidv7(),
+        replayId: recoveryId,
+      },
+      coordinatorDatabaseUrl: stack.databaseUrl,
+      appendDatabaseUrl: stack.databaseUrl,
+      connectorUrl: stack.connectUrl,
+      connectorDatabase: {
+        hostname: "postgres",
+        port: 5432,
+        user: "event_store_cdc",
+        password: "cdc",
+        dbname: "event_store",
+      },
+    };
+    const first = await startRecovery(options);
+    const second = await startRecovery(options);
+    expect(second).toEqual(first);
+    await expect(
+      pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM pg_replication_slots
+          WHERE slot_name=$1 AND failover AND NOT temporary
+            AND invalidation_reason IS NULL`,
+        [recoverySlotName(recoveryId)],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+  }, 90_000);
 
   it("keeps writes closed until a real projection deduplicates, catches up, and reconciles recovery", async () => {
     const projectionName = "slot-loss-recovery";
