@@ -24,7 +24,7 @@ services:
         "-c",
         "archive_command=mkdir -p /var/lib/postgresql/archive && test ! -f /var/lib/postgresql/archive/%f && cp %p /var/lib/postgresql/archive/%f",
         "-c",
-        "track_commit_timestamp=on",
+        "track_commit_timestamp=off",
       ]
     environment:
       POSTGRES_USER: postgres

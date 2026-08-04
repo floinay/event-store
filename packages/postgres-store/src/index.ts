@@ -31,7 +31,7 @@ export interface AppendResult {
   previousRevision: string;
   currentRevision: string;
   recordedAt: string;
-  /** Authoritative PostgreSQL COMMIT timestamp when the server exposes it. */
+  /** Event Store span timestamp sampled immediately after the SQL commit returns. */
   commitEpochMs?: number;
   events: readonly {
     eventId: string;
@@ -95,19 +95,14 @@ export class PostgresEventStore {
                 context.trafficClass === "critical",
               ],
             );
-          let result: {
-            rows: { append_v1: AppendResult; transaction_id: string }[];
-          };
+          let result: { rows: { append_v1: AppendResult }[] };
           try {
             result = await client.query<{
               append_v1: AppendResult;
-              transaction_id: string;
             }>(
-              `WITH appended AS (
-                 SELECT event_store.${this.useCriticalAppendFunction ? "append_v1_critical" : "append_v1"}($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb) AS append_v1
-               )
-               SELECT append_v1, pg_current_xact_id()::text AS transaction_id
-               FROM appended`,
+              "SELECT event_store." +
+                `${this.useCriticalAppendFunction ? "append_v1_critical" : "append_v1"}` +
+                "($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb) AS append_v1",
               [
                 input.producerService,
                 input.namespace,
@@ -128,21 +123,20 @@ export class PostgresEventStore {
               },
             );
           }
+          // The simple SQL statement has committed before node-postgres
+          // resolves this await. This is the Event Store's commit span; it
+          // intentionally does not depend on PostgreSQL commit timestamps.
+          const commitEpochMs = Date.now();
           const row = result.rows[0];
           if (row === undefined) throw new Error("append returned no result");
           const value = row?.append_v1;
           if (value === undefined) throw new Error("append returned no result");
-          const commitEpochMs = await this.commitEpochMs(
-            client,
-            row.transaction_id,
-          );
           // Keep this observation out of the durable idempotent result: a
           // retried request must retain its byte-equivalent response.
-          if (commitEpochMs !== undefined)
-            Object.defineProperty(value, "commitEpochMs", {
-              value: commitEpochMs,
-              enumerable: false,
-            });
+          Object.defineProperty(value, "commitEpochMs", {
+            value: commitEpochMs,
+            enumerable: false,
+          });
           return value;
         });
       } catch (error) {
@@ -167,30 +161,21 @@ export class PostgresEventStore {
     return this.withSession(async (client) => {
       const result = await client.query<{
         append_recovery_barrier: AppendResult;
-        transaction_id: string;
       }>(
-        `WITH appended AS (
-           SELECT event_store.append_recovery_barrier($1,$2,$3,$4) AS append_recovery_barrier
-         )
-         SELECT append_recovery_barrier, pg_current_xact_id()::text AS transaction_id
-         FROM appended`,
+        "SELECT event_store.append_recovery_barrier($1,$2,$3,$4) AS append_recovery_barrier",
         [replayId, partition, aggregateId, requestId],
       );
+      const commitEpochMs = Date.now();
       const row = result.rows[0];
       if (row === undefined)
         throw new Error("recovery barrier append returned no result");
       const value = row?.append_recovery_barrier;
       if (value === undefined)
         throw new Error("recovery barrier append returned no result");
-      const commitEpochMs = await this.commitEpochMs(
-        client,
-        row.transaction_id,
-      );
-      if (commitEpochMs !== undefined)
-        Object.defineProperty(value, "commitEpochMs", {
-          value: commitEpochMs,
-          enumerable: false,
-        });
+      Object.defineProperty(value, "commitEpochMs", {
+        value: commitEpochMs,
+        enumerable: false,
+      });
       return value;
     });
   }
@@ -322,24 +307,6 @@ export class PostgresEventStore {
       return await fn(client);
     } finally {
       client.release();
-    }
-  }
-
-  private async commitEpochMs(
-    client: PoolClient,
-    transactionId: string,
-  ): Promise<number | undefined> {
-    try {
-      const result = await client.query<{ commit_epoch_ms: string | null }>(
-        "SELECT (extract(epoch FROM pg_xact_commit_timestamp($1::xid)) * 1000)::text AS commit_epoch_ms",
-        [transactionId],
-      );
-      const value = Number(result.rows[0]?.commit_epoch_ms);
-      return Number.isFinite(value) ? value : undefined;
-    } catch {
-      // The append transaction has already committed. Measurement must never
-      // change its durable acknowledgement or request-id retry semantics.
-      return undefined;
     }
   }
 

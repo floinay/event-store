@@ -28,9 +28,9 @@ describe("production HA topology", () => {
         ]),
     );
     expect(postgres).toContain("instances: 3");
-    expect(postgres).toContain('track_commit_timestamp: "on"');
-    expect(localPostgres).toContain("track_commit_timestamp = on");
-    expect(compose).toContain('"-c",\n        "track_commit_timestamp=on"');
+    expect(postgres).toContain('track_commit_timestamp: "off"');
+    expect(localPostgres).toContain("track_commit_timestamp = off");
+    expect(compose).toContain('"-c",\n        "track_commit_timestamp=off"');
     expect(postgres).toContain("bootstrap:");
     expect(postgres).toContain("database: event_store");
     expect(postgres).toContain("minSyncReplicas: 1");

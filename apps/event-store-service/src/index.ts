@@ -498,11 +498,6 @@ export async function startServer(
               "SELECT event_store.assert_cdc_delivery_ready($1)",
               [walBudget],
             );
-            const commitTimestamp = await pool.query<{
-              enabled: string;
-            }>("SELECT current_setting('track_commit_timestamp') AS enabled");
-            if (commitTimestamp.rows[0]?.enabled !== "on")
-              throw new Error("PostgreSQL commit timestamps are not enabled");
             if (connectUrl !== undefined) {
               const connector = await pool.query<{
                 cdc_connector_name: string;
