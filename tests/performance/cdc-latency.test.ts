@@ -9,6 +9,8 @@ import { EventStoreStack } from "../fixtures/event-store-stack.js";
 
 const suite = process.env.RUN_LATENCY === "true" ? describe : describe.skip;
 const sampleCount = Number(process.env.LATENCY_SAMPLE_COUNT ?? 100);
+const concurrency = Number(process.env.LATENCY_CONCURRENCY ?? 1);
+const durationMs = Number(process.env.LATENCY_DURATION_MS ?? 0);
 
 interface AppendClient extends grpc.Client {
   AppendToStream(
@@ -62,6 +64,12 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       throw new Error(
         "LATENCY_SAMPLE_COUNT must be an integer of at least 100",
       );
+    if (!Number.isInteger(concurrency) || concurrency < 1)
+      throw new Error("LATENCY_CONCURRENCY must be a positive integer");
+    if (!Number.isFinite(durationMs) || durationMs < 0)
+      throw new Error("LATENCY_DURATION_MS must be a non-negative number");
+    if (process.env.RUN_RELEASE_LATENCY === "true" && durationMs < 1_800_000)
+      throw new Error("release latency profile requires at least 30 minutes");
     const committed = new Map<string, number>();
     const observed = new Map<string, number>();
     const kafka = new KafkaJS.Kafka({
@@ -80,6 +88,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       replace: true,
     });
     const warmupRequestId = uuidv7();
+    let appendsFinished = false;
     let warmupObserved!: () => void;
     const warmup = new Promise<void>((resolve) => {
       warmupObserved = resolve;
@@ -89,7 +98,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       received = resolve;
       const deadline = setTimeout(
         () => reject(new Error("timed out waiting for latency samples")),
-        30_000,
+        Math.max(30_000, durationMs + 30_000),
       );
       void consumer.run({
         eachMessage: async ({ message }) => {
@@ -102,14 +111,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
             committed.has(event.context.requestId)
           )
             observed.set(event.context.requestId, performance.now());
-          if (
-            committed.size === sampleCount &&
-            [...committed.keys()].every(
-              (requestId) =>
-                observed.has(requestId) &&
-                Number.isFinite(committed.get(requestId)),
-            )
-          ) {
+          if (appendsFinished && allSamplesReceived(committed, observed)) {
             clearTimeout(deadline);
             received();
           }
@@ -118,26 +120,30 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     });
     await append(client, warmupRequestId, uuidv7(), "warmup");
     await warmup;
-    for (let index = 0; index < sampleCount; index += 1) {
-      const requestId = uuidv7();
-      const aggregateId = uuidv7();
-      // Register before append so a very fast consumer cannot drop the sample.
-      committed.set(requestId, Number.NaN);
-      const committedAt = await append(
-        client,
-        requestId,
-        aggregateId,
-        String(index),
+    const deadline = performance.now() + durationMs;
+    let index = 0;
+    do {
+      await Promise.all(
+        Array.from(
+          { length: concurrency },
+          async () => {
+            const requestId = uuidv7();
+            const aggregateId = uuidv7();
+            // Register before append so a very fast consumer cannot drop it.
+            committed.set(requestId, Number.NaN);
+            const committedAt = await append(
+              client,
+              requestId,
+              aggregateId,
+              String(index++),
+            );
+            committed.set(requestId, committedAt);
+          },
+        ),
       );
-      committed.set(requestId, committedAt);
-      if (
-        committed.size === sampleCount &&
-        [...committed.keys()].every(
-          (id) => observed.has(id) && Number.isFinite(committed.get(id)),
-        )
-      )
-        received();
-    }
+    } while (committed.size < sampleCount || performance.now() < deadline);
+    appendsFinished = true;
+    if (allSamplesReceived(committed, observed)) received();
     await samplesReceived;
     await consumer.disconnect();
     const samples = [...committed]
@@ -153,7 +159,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         samples.reduce((total, sample) => total + sample, 0) / samples.length,
     };
     console.info(`CDC latency metrics: ${JSON.stringify(metrics)}`);
-    expect(metrics.samples).toBe(sampleCount);
+    expect(metrics.samples).toBeGreaterThanOrEqual(sampleCount);
     expect(samples.every((sample) => sample >= 0)).toBe(true);
     expect(samples.every((sample) => sample <= 50)).toBe(true);
     expect(metrics.p50).toBeLessThanOrEqual(50);
@@ -164,6 +170,19 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     expect(metrics.p999).toBeGreaterThanOrEqual(metrics.p99);
   }, 180_000);
 });
+
+function allSamplesReceived(
+  committed: ReadonlyMap<string, number>,
+  observed: ReadonlyMap<string, number>,
+): boolean {
+  return (
+    committed.size >= sampleCount &&
+    [...committed.keys()].every(
+      (requestId) =>
+        observed.has(requestId) && Number.isFinite(committed.get(requestId)),
+    )
+  );
+}
 
 function append(
   client: AppendClient,

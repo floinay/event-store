@@ -1,0 +1,22 @@
+name: Release latency profile
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  cdc-latency:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24.18.0, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - run: >-
+          RUN_LATENCY=true RUN_RELEASE_LATENCY=true
+          LATENCY_DURATION_MS=1800000 LATENCY_SAMPLE_COUNT=100
+          LATENCY_CONCURRENCY=16
+          npx vitest run tests/performance/cdc-latency.test.ts
