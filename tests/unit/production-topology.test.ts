@@ -105,6 +105,8 @@ describe("production HA topology", () => {
     expect(monitoring).toContain("EventStoreConnectSourceDisconnected");
     expect(monitoring).toContain("EventStoreConnectSourceLagP99High");
     expect(monitoring).toContain("EventStoreCommitToConsumerP95High");
+    expect(monitoring).toContain("EventStoreCommitToConsumerMeanHigh");
+    expect(monitoring).toContain("EventStoreCommitToConsumerP999High");
     expect(monitoring).toContain("EventStoreCommitToConsumerProbeUnavailable");
     expect(monitoring).toContain("EventStoreKafkaUnderReplicatedPartitions");
     expect(monitoring).toContain("EventStoreKafkaUnderMinIsr");

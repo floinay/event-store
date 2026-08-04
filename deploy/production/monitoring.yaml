@@ -93,6 +93,18 @@ spec:
           labels: { severity: page }
           annotations:
             summary: PostgreSQL commit to read_committed consumer p95 exceeds 100 ms
+        - alert: EventStoreCommitToConsumerMeanHigh
+          expr: sum(rate(event_store_cdc_commit_to_consumer_latency_seconds_sum[5m])) / clamp_min(sum(rate(event_store_cdc_commit_to_consumer_latency_seconds_count[5m])), 1) > 0.08
+          for: 2m
+          labels: { severity: page }
+          annotations:
+            summary: PostgreSQL commit to read_committed consumer mean exceeds 80 ms
+        - alert: EventStoreCommitToConsumerP999High
+          expr: histogram_quantile(0.999, sum(rate(event_store_cdc_commit_to_consumer_latency_seconds_bucket[5m])) by (le)) > 0.2
+          for: 2m
+          labels: { severity: page }
+          annotations:
+            summary: PostgreSQL commit to read_committed consumer p99.9 exceeds 200 ms
         - alert: EventStoreCommitToConsumerProbeUnavailable
           expr: min(event_store_cdc_latency_probe_up) < 1 or absent(event_store_cdc_latency_probe_up)
           for: 30s
