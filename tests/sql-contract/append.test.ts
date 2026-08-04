@@ -624,6 +624,9 @@ suite("append SQL contract", () => {
   });
 
   it("requires event-id reconciliation after a delivery incident", async () => {
+    await pool.query(
+      "UPDATE event_store.runtime_config SET cdc_delivery_healthy=true,cdc_reconciliation_required=false WHERE singleton",
+    );
     await pool.query("SELECT event_store.set_cdc_delivery_health(false)");
     try {
       const timeline = await pool.query<{ timeline_id: number }>(

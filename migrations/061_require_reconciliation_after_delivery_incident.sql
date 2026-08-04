@@ -14,7 +14,7 @@ BEGIN
   END IF;
   UPDATE event_store.runtime_config
      SET cdc_delivery_healthy=false,
-         cdc_reconciliation_required=true
+         cdc_reconciliation_required=cdc_reconciliation_required OR cdc_delivery_healthy
    WHERE singleton;
 END $$;
 
