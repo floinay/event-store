@@ -391,4 +391,29 @@ suite("projection crash boundary", () => {
       ).rows[0]?.count,
     ).toBe(0);
   });
+
+  it("retains projection failures for thirty days", async () => {
+    const generationId = uuidv7();
+    await pool.query(
+      "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ('retention',$1,'building',clock_timestamp())",
+      [generationId],
+    );
+    const insert = (offset: number, age: string) =>
+      pool.query(
+        `INSERT INTO projection_runtime.failures(projection_name,generation_id,event_id,envelope_sha256,topic_name,partition_no,kafka_offset,attempt_count,error_code,error_detail,envelope,first_failed_at,last_failed_at)
+         VALUES ('retention',$1,$2,$3,'event-store.events.v1',0,$4,1,'test','{}','{}',clock_timestamp()-$5::interval,clock_timestamp()-$5::interval)`,
+        [generationId, uuidv7(), "0".repeat(64), offset, age],
+      );
+    await insert(0, "31 days");
+    await insert(1, "29 days");
+    await expect(
+      pool.query("SELECT projection_runtime.prune_failures() AS deleted"),
+    ).resolves.toMatchObject({ rows: [{ deleted: "1" }] });
+    await expect(
+      pool.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM projection_runtime.failures WHERE projection_name='retention' AND generation_id=$1",
+        [generationId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+  });
 });
