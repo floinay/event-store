@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { canonicalJson, uuidv7 } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 const suite = process.env.RUN_INTEGRATION === "true" ? describe : describe.skip;
 
@@ -343,6 +343,106 @@ suite("Debezium CDC", () => {
       await new Promise((resolve) => setTimeout(resolve, 750));
       expect(seen.has(rolledBackEventId)).toBe(false);
     } finally {
+      await consumer.disconnect();
+    }
+  }, 90_000);
+
+  it("delivers both transactions when event-number allocation precedes commit order", async () => {
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [stack.kafkaBroker()] },
+    });
+    const consumer = kafka.consumer({
+      kafkaJS: {
+        groupId: `cdc-commit-order-${uuidv7()}`,
+        autoCommit: false,
+        fromBeginning: true,
+        readUncommitted: false,
+      },
+    });
+    const seen = new Set<string>();
+    const waiters = new Map<string, () => void>();
+    await consumer.connect();
+    await consumer.subscribe({
+      topics: ["event-store.events.v1"],
+      replace: true,
+    });
+    await consumer.run({
+      eachMessage: async ({ message }) => {
+        const id = message.headers?.id;
+        const eventId = Array.isArray(id) ? id[0]?.toString() : id?.toString();
+        if (eventId === undefined) return;
+        seen.add(eventId);
+        waiters.get(eventId)?.();
+      },
+    });
+    const waitFor = (eventId: string): Promise<void> => {
+      if (seen.has(eventId)) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error(`CDC did not deliver ${eventId}`)),
+          30_000,
+        );
+        waiters.set(eventId, () => {
+          clearTimeout(timeout);
+          waiters.delete(eventId);
+          resolve();
+        });
+      });
+    };
+    const append = async (client: Pool | PoolClient, requestId: string) => {
+      const result = await client.query<{
+        append_v1: { events: { eventId: string; eventNumber: string }[] };
+      }>(
+        "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+        [
+          "orders-command",
+          "orders",
+          "Order",
+          uuidv7(),
+          requestId,
+          "no_stream",
+          null,
+          JSON.stringify([
+            {
+              eventName: "order.created",
+              schemaVersion: 1,
+              occurredAt: "2026-08-04T10:12:18.120Z",
+              payload: { orderRef: requestId },
+            },
+          ]),
+          JSON.stringify({
+            correlationId: uuidv7(),
+            causationId: null,
+            actor: { kind: "user", subjectRef: "usr_commit_order" },
+          }),
+        ],
+      );
+      const event = result.rows[0]?.append_v1.events[0];
+      if (event === undefined) throw new Error("append returned no event");
+      return event;
+    };
+    const first = await pool.connect();
+    const second = await pool.connect();
+    try {
+      const firstRequestId = uuidv7();
+      const secondRequestId = uuidv7();
+      await first.query("BEGIN");
+      const allocatedFirst = await append(first, firstRequestId);
+      const committedSecond = await append(second, secondRequestId);
+      expect(BigInt(allocatedFirst.eventNumber)).toBeLessThan(
+        BigInt(committedSecond.eventNumber),
+      );
+      await waitFor(committedSecond.eventId);
+      expect(seen.has(allocatedFirst.eventId)).toBe(false);
+      await first.query("COMMIT");
+      await Promise.all([
+        waitFor(allocatedFirst.eventId),
+        waitFor(committedSecond.eventId),
+      ]);
+    } finally {
+      await first.query("ROLLBACK").catch(() => undefined);
+      first.release();
+      second.release();
       await consumer.disconnect();
     }
   }, 90_000);
