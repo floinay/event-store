@@ -358,10 +358,10 @@ export class ProjectionTransactionRunner {
       rejectExternalAbort = reject;
     });
     const onExternalAbort = (): void => {
-      abort.abort();
       rejectExternalAbort(
         new ProjectionRebalanceError("projection assignment was revoked"),
       );
+      abort.abort();
     };
     const assertNotRebalanced = (): void => {
       if (options.abortSignal?.aborted)
@@ -433,12 +433,12 @@ export class ProjectionTransactionRunner {
           races.push(
             new Promise<never>((_, reject) => {
               timeout = setTimeout(() => {
-                abort.abort();
                 reject(
                   new ProjectionHandlerTimeoutError(
                     `projection handler exceeded ${options.transactionTimeoutMs}ms`,
                   ),
                 );
+                abort.abort();
               }, options.transactionTimeoutMs);
             }),
           );

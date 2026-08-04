@@ -88,8 +88,13 @@ export class KafkaProjectionRunner {
       kafkaJS: {
         groupId: this.config.groupId,
         autoCommit: false,
-        // Assignment-time database seeks determine the initial position.
-        fromBeginning: false,
+        // The Confluent compatibility adapter attempts its automatic reset
+        // before `assignment()` becomes observable, so it cannot express
+        // `auto.offset.reset=error` while this runner performs a manual seek.
+        // Earliest is safe: the assignment gate below prevents any record from
+        // reaching a handler until the durable PostgreSQL checkpoint has set
+        // the exact position. It can replay duplicates, but can never skip.
+        fromBeginning: true,
         readUncommitted: false,
         allowAutoTopicCreation: false,
         minBytes: 1,
