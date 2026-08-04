@@ -78,6 +78,7 @@ interface AppendRequest extends JsonObject {
     causation_id?: string;
     actor_json: Buffer;
     traceparent?: string;
+    critical?: boolean;
   };
 }
 interface StreamRequest extends JsonObject {
@@ -213,6 +214,7 @@ function parseAppendRequest(request: AppendRequest, producerService: string) {
     causationId: request.context.causation_id || null,
     actor,
     traceparent: request.context.traceparent,
+    trafficClass: request.context.critical === true ? "critical" : "standard",
   });
   return {
     producerService,

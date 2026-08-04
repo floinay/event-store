@@ -17,6 +17,7 @@ export const EventContextSchema = z
     causationId: UuidV7.nullable(),
     actor: ActorSchema,
     traceparent: z.string().max(128).optional(),
+    trafficClass: z.enum(["standard", "critical"]).optional(),
   })
   .passthrough();
 

@@ -86,8 +86,11 @@ export class PostgresEventStore {
         return await this.withSession(async (client) => {
           if (this.walBudgetBytes !== undefined)
             await client.query(
-              "SELECT event_store.assert_append_cdc_ready($1)",
-              [this.walBudgetBytes.toString()],
+              "SELECT event_store.assert_append_cdc_ready($1,$2)",
+              [
+                this.walBudgetBytes.toString(),
+                context.trafficClass === "critical",
+              ],
             );
           let result: { rows: { append_v1: AppendResult }[] };
           try {
