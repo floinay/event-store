@@ -15,7 +15,7 @@ BEGIN
     INTO v_slot
     FROM pg_replication_slots
     WHERE slot_name = 'event_store_live';
-  IF NOT FOUND OR NOT v_slot.active OR v_slot.invalidation_reason IS NOT NULL THEN
+  IF NOT FOUND OR NOT v_slot.active OR v_slot.invalidation_reason IS NOT NULL OR v_slot.restart_lsn IS NULL THEN
     RAISE EXCEPTION 'CDC slot is not ready for append' USING ERRCODE = 'P0001';
   END IF;
   v_retained := pg_wal_lsn_diff(pg_current_wal_lsn(), v_slot.restart_lsn);
