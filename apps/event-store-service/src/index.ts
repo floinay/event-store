@@ -268,6 +268,7 @@ export async function startServer(): Promise<grpc.Server> {
     connectionString: url,
     max: Number(process.env.DB_POOL_SIZE ?? 20),
   });
+  const criticalUrl = process.env.CRITICAL_DATABASE_URL;
   const walBudget = process.env.CDC_WAL_BUDGET_BYTES;
   if (
     walBudget === undefined ||
@@ -276,6 +277,12 @@ export async function startServer(): Promise<grpc.Server> {
   )
     throw new Error("CDC_WAL_BUDGET_BYTES must be a positive integer");
   const store = new PostgresEventStore(pool, BigInt(walBudget));
+  const criticalPool =
+    criticalUrl === undefined ? undefined : new Pool({ connectionString: criticalUrl });
+  const criticalStore =
+    criticalPool === undefined
+      ? undefined
+      : new PostgresEventStore(criticalPool, BigInt(walBudget), true);
   const metrics = {
     appendCount: 0,
     appendFailureCount: 0,
@@ -406,7 +413,14 @@ export async function startServer(): Promise<grpc.Server> {
           call.getAuthContext().sslPeerCertificate?.subject?.CN,
           trustedCriticalSubjects,
         );
-        const result = await store.append(
+        const appendStore =
+          trafficClass === "critical" ? criticalStore : store;
+        if (appendStore === undefined)
+          throw Object.assign(
+            new Error("critical append database principal is not configured"),
+            { code: grpc.status.PERMISSION_DENIED },
+          );
+        const result = await appendStore.append(
           parseAppendRequest(call.request, producerService, trafficClass),
         );
         // This span is emitted after PostgreSQL completed the append statement,
@@ -583,6 +597,7 @@ export async function startServer(): Promise<grpc.Server> {
           (resolve) => health?.close(() => resolve()) ?? resolve(),
         );
         await pool.end();
+        await criticalPool?.end();
       })().finally(callback);
     });
   };

@@ -12,6 +12,7 @@ interface AppliedMigration {
 const loginRoles = new Set([
   "event_store_migrator",
   "event_store_app",
+  "event_store_critical_app",
   "event_store_cdc",
   "projection_worker",
 ]);
@@ -47,6 +48,10 @@ export async function migrate(
     if (includeClusterMigration)
       await client.query(
         await readFile(join(migrationsDir, "001_roles.sql"), "utf8"),
+      );
+    if (includeClusterMigration)
+      await client.query(
+        "DO $$ BEGIN CREATE ROLE event_store_critical_app LOGIN NOINHERIT; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
       );
     if (includeClusterMigration) {
       for (const [role, password] of rolePasswordsFromEnvironment()) {

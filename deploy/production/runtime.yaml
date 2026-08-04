@@ -34,6 +34,9 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef: { name: event-store-app, key: database-url }
+            - name: CRITICAL_DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: event-store-critical-app, key: database-url }
             - name: PRODUCER_SERVICE
               value: event-store-service
             - name: CONNECT_URL

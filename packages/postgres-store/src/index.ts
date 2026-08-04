@@ -70,6 +70,7 @@ export class PostgresEventStore {
   constructor(
     private readonly pool: Pool,
     private readonly walBudgetBytes?: bigint,
+    private readonly useCriticalAppendFunction = false,
   ) {}
 
   async append(input: AppendInput): Promise<AppendResult> {
@@ -95,7 +96,7 @@ export class PostgresEventStore {
           let result: { rows: { append_v1: AppendResult }[] };
           try {
             result = await client.query<{ append_v1: AppendResult }>(
-              `SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)`,
+              `SELECT event_store.${this.useCriticalAppendFunction ? "append_v1_critical" : "append_v1"}($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb) AS append_v1`,
               [
                 input.producerService,
                 input.namespace,
