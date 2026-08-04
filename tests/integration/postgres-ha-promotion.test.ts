@@ -69,13 +69,13 @@ suite("PostgreSQL HA promotion", () => {
       .withCommand([
         "-ceu",
         `until pg_isready -h ha-primary -U postgres; do sleep 1; done
-         mkdir -p \"$PGDATA\"
-         chown -R postgres:postgres \"$PGDATA\"
-         chmod 700 \"$PGDATA\"
-         rm -rf \"$PGDATA\"/*
-         PGPASSWORD=postgres gosu postgres pg_basebackup -h ha-primary -U postgres -D \"$PGDATA\" -R -X stream -C -S standby_slot
-         printf \"primary_conninfo = 'host=ha-primary port=5432 user=postgres password=postgres dbname=event_store application_name=ha-standby'\\nprimary_slot_name = 'standby_slot'\\nhot_standby_feedback = on\\nsync_replication_slots = on\\n\" >> \"$PGDATA/postgresql.auto.conf\"
-         exec gosu postgres postgres -D \"$PGDATA\" -c hot_standby=on -c wal_level=logical`,
+         mkdir -p "$PGDATA"
+         chown -R postgres:postgres "$PGDATA"
+         chmod 700 "$PGDATA"
+         rm -rf "$PGDATA"/*
+         PGPASSWORD=postgres gosu postgres pg_basebackup -h ha-primary -U postgres -D "$PGDATA" -R -X stream -C -S standby_slot
+         printf "primary_conninfo = 'host=ha-primary port=5432 user=postgres password=postgres dbname=event_store application_name=ha-standby'\\nprimary_slot_name = 'standby_slot'\\nhot_standby_feedback = on\\nsync_replication_slots = on\\n" >> "$PGDATA/postgresql.auto.conf"
+         exec gosu postgres postgres -D "$PGDATA" -c hot_standby=on -c wal_level=logical`,
       ])
       .withNetwork(network)
       .withNetworkAliases("ha-standby")
