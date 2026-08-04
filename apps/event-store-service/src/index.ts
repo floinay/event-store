@@ -232,8 +232,16 @@ export async function startServer(): Promise<grpc.Server> {
               walBudget,
             ]);
             if (connectUrl !== undefined) {
+              const connector = await pool.query<{
+                cdc_connector_name: string;
+              }>(
+                "SELECT cdc_connector_name FROM event_store.runtime_config WHERE singleton",
+              );
+              const connectorName = connector.rows[0]?.cdc_connector_name;
+              if (connectorName === undefined)
+                throw new Error("CDC connector ownership is unavailable");
               const status = await fetch(
-                `${connectUrl}/connectors/event-store-live/status`,
+                `${connectUrl}/connectors/${encodeURIComponent(connectorName)}/status`,
               );
               const body = (await status.json()) as {
                 connector?: { state?: string };
