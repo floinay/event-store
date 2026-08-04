@@ -354,6 +354,14 @@ suite("append SQL contract", () => {
         .digest("hex"),
     );
   });
+
+  it("fails closed when a failover candidate has no synchronized logical slot", async () => {
+    await expect(
+      pool.query(
+        "SELECT event_store.assert_failover_candidate('event_store_missing')",
+      ),
+    ).rejects.toMatchObject({ code: "P0001" });
+  });
 });
 
 function appendInput(
