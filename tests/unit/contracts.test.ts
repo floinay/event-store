@@ -28,6 +28,15 @@ describe("event contracts", () => {
         encrypted: { keyId: "subject-k1", ciphertext: "..." },
       }),
     ).not.toThrow();
+    for (const key of [
+      "phoneNumber",
+      "telephoneNumber",
+      "socialSecurityNumber",
+      "birthDate",
+    ])
+      expect(() => assertNoDirectPii({ [key]: "secret" })).toThrow(
+        "direct PII",
+      );
   });
 
   it("canonicalizes object order for snapshot hashes", () => {

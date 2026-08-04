@@ -57,8 +57,23 @@ export function partitionKey(
   return `${event.namespace}|${event.aggregateType}|${event.aggregateId}`;
 }
 
+const structuralKey = new Set([
+  "eventname",
+  "schemaversion",
+  "occurredat",
+  "requestid",
+  "correlationid",
+  "causationid",
+  "aggregateid",
+  "aggregatetype",
+  "subjectref",
+]);
 const forbiddenPiiKey =
-  /^(?:name|firstName|lastName|email|phone|address|token|password|credential|cardNumber|pan|cvv)$/i;
+  /(?:name|firstname|lastname|email|phone|phonenumber|telephone|telephonenumber|address|token|password|credential|secret|cardnumber|pan|cvv|ssn|socialsecuritynumber|dateofbirth|birthdate|dob)$/i;
+
+function normalizedKey(key: string): string {
+  return key.replaceAll(/[^a-z0-9]/gi, "").toLowerCase();
+}
 
 /** Rejects direct PII-like fields before they can become immutable event data. */
 export function assertNoDirectPii(
@@ -76,7 +91,10 @@ export function assertNoDirectPii(
     return;
   }
   for (const [key, nested] of Object.entries(value)) {
-    if (forbiddenPiiKey.test(key))
+    if (
+      !structuralKey.has(normalizedKey(key)) &&
+      forbiddenPiiKey.test(normalizedKey(key))
+    )
       throw Object.assign(
         new Error(`direct PII field is prohibited: ${path}.${key}`),
         { code: "22023" },

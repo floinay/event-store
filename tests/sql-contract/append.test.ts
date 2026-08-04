@@ -201,7 +201,16 @@ suite("append SQL contract", () => {
   });
 
   it("rejects direct SQL PII fields before the event is stored", async () => {
-    for (const key of ["email", "customer_email", "customerEmail", "token"])
+    for (const key of [
+      "email",
+      "customer_email",
+      "customerEmail",
+      "token",
+      "phoneNumber",
+      "telephoneNumber",
+      "socialSecurityNumber",
+      "birthDate",
+    ])
       await expect(
         pool.query(
         "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
