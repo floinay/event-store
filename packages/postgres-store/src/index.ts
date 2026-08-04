@@ -125,7 +125,13 @@ export class PostgresEventStore {
           const commitEpochMs = Date.now();
           const value = result.rows[0]?.append_v1;
           if (value === undefined) throw new Error("append returned no result");
-          return { ...value, commitEpochMs };
+          // Keep this observation out of the durable idempotent result: a
+          // retried request must retain its byte-equivalent response.
+          Object.defineProperty(value, "commitEpochMs", {
+            value: commitEpochMs,
+            enumerable: false,
+          });
+          return value;
         });
       } catch (error) {
         const delay = appendRetryDelaysMs[attempt];
@@ -157,7 +163,11 @@ export class PostgresEventStore {
       const value = result.rows[0]?.append_recovery_barrier;
       if (value === undefined)
         throw new Error("recovery barrier append returned no result");
-      return { ...value, commitEpochMs };
+      Object.defineProperty(value, "commitEpochMs", {
+        value: commitEpochMs,
+        enumerable: false,
+      });
+      return value;
     });
   }
 
