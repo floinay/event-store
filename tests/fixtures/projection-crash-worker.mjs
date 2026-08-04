@@ -44,6 +44,12 @@ const runner = new KafkaProjectionRunner(
       "INSERT INTO consumer_kafka_crash.events(projection_name,event_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
       [identity.name, event.eventId],
     );
+    await client.query(
+      `INSERT INTO consumer_kafka_crash.handler_calls(projection_name,event_id,calls)
+       VALUES ($1,$2,1) ON CONFLICT (projection_name,event_id)
+       DO UPDATE SET calls=consumer_kafka_crash.handler_calls.calls+1`,
+      [identity.name, event.eventId],
+    );
   },
   new ProjectionCheckpointStore(pool, identity),
   new ProjectionFailureReporter(pool, identity),

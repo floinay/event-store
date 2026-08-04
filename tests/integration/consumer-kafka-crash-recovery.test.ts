@@ -70,7 +70,7 @@ suite("projection consumer Kafka crash recovery", () => {
     await stack.start({ cdc: true });
     pool = await stack.pool();
     await pool.query(
-      "CREATE SCHEMA consumer_kafka_crash; CREATE TABLE consumer_kafka_crash.events(projection_name text NOT NULL,event_id uuid NOT NULL,PRIMARY KEY(projection_name,event_id))",
+      "CREATE SCHEMA consumer_kafka_crash; CREATE TABLE consumer_kafka_crash.events(projection_name text NOT NULL,event_id uuid NOT NULL,PRIMARY KEY(projection_name,event_id)); CREATE TABLE consumer_kafka_crash.handler_calls(projection_name text NOT NULL,event_id uuid NOT NULL,calls integer NOT NULL,PRIMARY KEY(projection_name,event_id))",
     );
   }, 180_000);
   afterAll(async () => {
@@ -335,6 +335,12 @@ suite("projection consumer Kafka crash recovery", () => {
           generationId,
         }).nextOffset(topic, 0);
         expect(checkpoint).toBe(1n);
+        await expect(
+          pool.query<{ calls: number }>(
+            "SELECT calls FROM consumer_kafka_crash.handler_calls WHERE projection_name=$1 AND event_id=$2",
+            [projectionName, event.eventId],
+          ),
+        ).resolves.toMatchObject({ rows: [{ calls: 1 }] });
       } finally {
         await stopWorker(crashing).catch(() => undefined);
         if (recovering !== undefined)
