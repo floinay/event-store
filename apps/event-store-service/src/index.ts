@@ -310,11 +310,11 @@ export async function startServer(): Promise<grpc.Server> {
               response.writeHead(404).end();
               return;
             }
-            // Readiness represents the standard client path. Critical writers
-            // have a separate mTLS policy and must not mask the 70% stop that
-            // protects ordinary append availability.
+            // A ready endpoint means the standard path has an active logical
+            // consumer and the immutable outbox publication, not merely that
+            // its bounded inactive-slot WAL window remains open.
             await pool.query(
-              "SELECT event_store.assert_append_cdc_ready($1, false)",
+              "SELECT event_store.assert_cdc_delivery_ready($1)",
               [walBudget],
             );
             if (connectUrl !== undefined) {
