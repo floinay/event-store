@@ -18,6 +18,7 @@ jobs:
       - run: npm ci
       - run: buf lint
       - run: buf breaking --against '.git#branch=main'
+      - run: npm run test:json-schema-compat
       - run: npm run format
       - run: npm run lint
       - run: npm run typecheck

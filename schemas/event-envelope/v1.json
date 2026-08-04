@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://event-store.local/schemas/event-envelope/v1",
+  "type": "object",
+  "properties": {
+    "eventId": { "type": "string", "format": "uuid" },
+    "eventName": { "type": "string" },
+    "schemaVersion": { "type": "integer", "minimum": 1 },
+    "payload": { "type": "object" }
+  },
+  "required": ["eventId", "eventName", "schemaVersion", "payload"],
+  "additionalProperties": true
+}

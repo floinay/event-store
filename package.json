@@ -19,6 +19,7 @@
     "test:integration": "npm run build && RUN_INTEGRATION=true vitest run --no-file-parallelism tests/sql-contract tests/integration",
     "lint": "eslint .",
     "format": "prettier --check .",
+    "test:json-schema-compat": "node tools/check-json-schema-compatibility.mjs",
     "migrate": "npm run build && node tools/migrate/dist/index.js",
     "bootstrap": "npm run build && node tools/bootstrap/dist/index.js",
     "reconcile": "npm run build && node tools/reconcile/dist/index.js",
