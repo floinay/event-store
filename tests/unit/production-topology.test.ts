@@ -32,6 +32,12 @@ describe("production HA topology", () => {
     expect(runtime).toContain("TOPIC_CREATION_ENABLE");
     expect(runtime).toContain("CONNECT_METRICS_PORT");
     expect(runtime).toContain("jmx-exporter");
+    expect(runtime).toContain("PRODUCER_SERVICE");
+    expect(runtime).toContain("HTTP_LISTEN_ADDRESS");
+    expect(runtime).toContain("GRPC_TLS_CERT_PEM");
+    expect(runtime).toContain("event-store-grpc-tls");
+    expect(runtime).toContain("CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR");
+    expect(runtime).toContain("CONNECT_CONSUMER_ISOLATION_LEVEL");
     expect(preflight).toContain("assert_failover_candidate('event_store_live')");
     expect(bootstrap).toContain("event-store-kafka-kafka-bootstrap:9092");
     expect(bootstrap).toContain("http://event-store-connect:8083");
