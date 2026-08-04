@@ -356,6 +356,15 @@ export class KafkaProjectionRunner {
       await admin.disconnect().catch(() => undefined);
       throw error;
     }
+    const disconnectConsumer = consumer.disconnect.bind(consumer);
+    let disconnected = false;
+    consumer.disconnect = async (): Promise<void> => {
+      if (disconnected) return;
+      disconnected = true;
+      await disconnectConsumer().catch(() => undefined);
+      await producer.disconnect().catch(() => undefined);
+      await admin.disconnect().catch(() => undefined);
+    };
     return consumer;
   }
 }
