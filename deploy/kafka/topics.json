@@ -21,7 +21,7 @@
     "configs": { "retention.ms": "2592000000", "min.insync.replicas": "2" }
   },
   {
-    "name": "__debezium-heartbeat.event-store-cdc",
+    "name": "__debezium-heartbeat.event-store-live",
     "partitions": 1,
     "replicationFactor": 3,
     "configs": { "retention.ms": "86400000", "min.insync.replicas": "2" }

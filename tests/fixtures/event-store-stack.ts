@@ -364,7 +364,7 @@ EOF
           "database.user": "event_store_cdc",
           "database.password": "cdc",
           "database.dbname": "event_store",
-          "topic.prefix": "event-store-cdc",
+          "topic.prefix": "event-store-live",
           "plugin.name": "pgoutput",
           "publication.name": "event_store_events",
           "publication.autocreate.mode": "disabled",
@@ -394,7 +394,7 @@ EOF
           "predicates.isCanonicalEvents.type":
             "org.apache.kafka.connect.transforms.predicates.TopicNameMatches",
           "predicates.isCanonicalEvents.pattern":
-            "event-store-cdc\\.event_store\\.events",
+            "event-store-live\\.event_store\\.events",
           transforms: "outbox",
           "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
           "transforms.outbox.predicate": "isCanonicalEvents",

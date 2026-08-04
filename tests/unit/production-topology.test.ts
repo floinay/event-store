@@ -69,6 +69,10 @@ describe("production HA topology", () => {
     expect(connector).toContain(
       '"database.hostname": "event-store-postgres-rw"',
     );
+    expect(connector).toContain('"topic.prefix": "event-store-live"');
+    expect(connector).toContain(
+      '"predicates.isCanonicalEvents.pattern": "event-store-live\\\\.event_store\\\\.events"',
+    );
     expect(monitoring).toContain("kind: ServiceMonitor");
     expect(monitoring).toContain("kind: PrometheusRule");
     expect(monitoring).toContain("EventStoreAppendUnknownOutcome");

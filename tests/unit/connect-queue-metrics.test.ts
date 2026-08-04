@@ -52,4 +52,18 @@ describe("Connect queue metrics", () => {
     ])
       expect(config).toContain(metric);
   });
+
+  it("uses the runtime-owned connector name as the Debezium JMX server label", async () => {
+    const [connector, runtimeConfig] = await Promise.all([
+      readFile("deploy/connector/event-store-live.json", "utf8"),
+      readFile(
+        "migrations/028_preserve_recovery_connector_ownership.sql",
+        "utf8",
+      ),
+    ]);
+    expect(JSON.parse(connector).config["topic.prefix"]).toBe(
+      "event-store-live",
+    );
+    expect(runtimeConfig).toContain("DEFAULT 'event-store-live'");
+  });
 });

@@ -10,7 +10,7 @@ import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { migrate } from "@event-store/migrate";
 import { reconcile } from "@event-store/reconcile";
 import { PostgresEventStore } from "@event-store/postgres-store";
-import { uuidv7 } from "@event-store/contracts";
+import { canonicalJson, uuidv7 } from "@event-store/contracts";
 
 const suite = process.env.RUN_INTEGRATION === "true" ? describe : describe.skip;
 const image = "postgres:18.4-bookworm";
@@ -71,7 +71,7 @@ suite("PostgreSQL HA promotion", () => {
           "database.user": "event_store_cdc",
           "database.password": "cdc",
           "database.dbname": "event_store",
-          "topic.prefix": "event-store-cdc",
+          "topic.prefix": "event-store-live",
           "plugin.name": "pgoutput",
           "publication.name": "event_store_events",
           "publication.autocreate.mode": "disabled",
@@ -93,7 +93,7 @@ suite("PostgreSQL HA promotion", () => {
           "predicates.isCanonicalEvents.type":
             "org.apache.kafka.connect.transforms.predicates.TopicNameMatches",
           "predicates.isCanonicalEvents.pattern":
-            "event-store-cdc\\.event_store\\.events",
+            "event-store-live\\.event_store\\.events",
           transforms: "outbox",
           "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
           "transforms.outbox.predicate": "isCanonicalEvents",
@@ -365,11 +365,17 @@ suite("PostgreSQL HA promotion", () => {
     );
     await consumer.run({
       eachMessage: async ({ message }) => {
-        const envelope = JSON.parse(message.value?.toString() ?? "{}") as {
+        const value = message.value?.toString() ?? "";
+        const envelope = JSON.parse(value || "{}") as {
           context?: { requestId?: string };
+          recordedAt?: string;
         };
         const requestId = envelope.context?.requestId;
         if (requestId !== undefined && expectedRequestIds.has(requestId)) {
+          expect(value).toBe(canonicalJson(envelope));
+          expect(message.timestamp).toBe(
+            String(Date.parse(envelope.recordedAt!)),
+          );
           receivedRequestIds.add(requestId);
           if (receivedRequestIds.size === expectedRequestIds.size) delivered();
         }
