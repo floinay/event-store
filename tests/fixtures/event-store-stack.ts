@@ -75,7 +75,12 @@ recovery_target_action = 'promote'
 EOF
          touch /restore/data/recovery.signal
          chown -R postgres:postgres /restore
-         gosu postgres postgres -D /restore/data -c listen_addresses='*' > /tmp/restored-postgres.log 2>&1 &`,
+         gosu postgres postgres -D /restore/data \
+           -c listen_addresses='*' \
+           -c wal_level=logical \
+           -c max_replication_slots=10 \
+           -c max_wal_senders=10 \
+           > /tmp/restored-postgres.log 2>&1 &`,
       ]);
       if (configure.exitCode !== 0)
         throw new Error(`could not configure restored PostgreSQL: ${configure.stderr}`);
