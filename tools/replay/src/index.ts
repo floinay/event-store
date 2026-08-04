@@ -77,7 +77,10 @@ export async function ensureReplayTopic(
           replicationFactor,
           configEntries: [
             { name: "cleanup.policy", value: "delete" },
-            { name: "min.insync.replicas", value: "2" },
+            {
+              name: "min.insync.replicas",
+              value: String(Math.min(2, replicationFactor)),
+            },
           ],
         },
       ],
