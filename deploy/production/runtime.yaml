@@ -63,6 +63,8 @@ spec:
               value: "8589934592"
             - name: CDC_LATENCY_PROBE_INTERVAL_MS
               value: "5000"
+            - name: CDC_DELIVERY_HEALTH_CHECK_INTERVAL_MS
+              value: "5000"
             - name: GRPC_TLS_CERT_PEM
               valueFrom:
                 secretKeyRef: { name: event-store-grpc-tls, key: cert.pem }

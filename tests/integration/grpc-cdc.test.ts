@@ -601,7 +601,7 @@ suite("gRPC to CDC", () => {
     }
   }, 90_000);
 
-  it("keeps a bounded durable append window after a Connect process crash", async () => {
+  it("durably closes appends after a Connect crash and reopens only after delivery recovers", async () => {
     await stack.stopConnect();
     const pool = await stack.pool();
     const directRequestId = uuidv7();
@@ -690,13 +690,13 @@ suite("gRPC to CDC", () => {
               }),
             ],
           ),
-        ).resolves.toBeDefined();
+        ).rejects.toMatchObject({ code: "P0001" });
       } finally {
         await direct.query("RESET ROLE").catch(() => undefined);
         direct.release();
       }
-      const response = await new Promise<Record<string, unknown>>(
-        (resolve, reject) =>
+      const appendGrpc = () =>
+        new Promise<Record<string, unknown>>((resolve, reject) =>
           client.AppendToStream(
             {
               request_id: grpcRequestId,
@@ -722,9 +722,56 @@ suite("gRPC to CDC", () => {
             (error, value) =>
               error === null ? resolve(value ?? {}) : reject(error),
           ),
-      );
-      expect(response).toBeDefined();
+        );
+      await expect(appendGrpc()).rejects.toMatchObject({
+        code: grpc.status.RESOURCE_EXHAUSTED,
+      });
       await stack.restartConnect();
+      const readyDeadline = Date.now() + 30_000;
+      while (Date.now() < readyDeadline) {
+        const readiness = await fetch("http://127.0.0.1:50161/readyz");
+        if (readiness.status === 200) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      await expect(fetch("http://127.0.0.1:50161/readyz")).resolves.toMatchObject({
+        status: 200,
+      });
+      const directAfterRecovery = await pool.connect();
+      try {
+        await directAfterRecovery.query("SET ROLE event_store_app");
+        await expect(
+          directAfterRecovery.query(
+            "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+            [
+              "orders-command",
+              "orders",
+              "Order",
+              uuidv7(),
+              directRequestId,
+              "no_stream",
+              null,
+              JSON.stringify([
+                {
+                  eventName: "order.created",
+                  schemaVersion: 1,
+                  occurredAt: "2026-08-04T10:12:18.120Z",
+                  payload: {},
+                },
+              ]),
+              JSON.stringify({
+                correlationId: uuidv7(),
+                causationId: null,
+                actor: { kind: "user", subjectRef: "usr_1" },
+              }),
+            ],
+          ),
+        ).resolves.toBeDefined();
+      } finally {
+        await directAfterRecovery.query("RESET ROLE").catch(() => undefined);
+        directAfterRecovery.release();
+      }
+      const response = await appendGrpc();
+      expect(response).toBeDefined();
       await expect(delivered).resolves.toBeUndefined();
     } finally {
       await consumer.disconnect().catch(() => undefined);

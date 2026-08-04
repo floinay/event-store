@@ -33,3 +33,9 @@ remain fail-closed until the configured slot, Connect, and Kafka delivery are
 healthy. If the slot is absent, invalid, or cannot resume from its durable
 offset, run slot-loss recovery and reconcile all `event_id` values before
 reopening append traffic.
+
+Each Event Store replica checks that delivery chain every five seconds
+(`CDC_DELIVERY_HEALTH_CHECK_INTERVAL_MS`). A failed check persistently closes
+append admission in PostgreSQL, including for existing gRPC connections; a
+healthy chain reopens it. Storage-only deployments keep CDC admission disabled
+and do not use this fence.

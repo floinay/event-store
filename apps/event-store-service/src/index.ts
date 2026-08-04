@@ -477,6 +477,89 @@ export async function startServer(
     throw new Error(
       "KAFKA_BROKERS is required when CDC latency probe is enabled",
     );
+  const deliveryHealthIntervalText =
+    process.env.CDC_DELIVERY_HEALTH_CHECK_INTERVAL_MS ?? "5000";
+  const deliveryHealthIntervalMs = Number(deliveryHealthIntervalText);
+  if (
+    !/^\d+$/.test(deliveryHealthIntervalText) ||
+    !Number.isInteger(deliveryHealthIntervalMs) ||
+    deliveryHealthIntervalMs < 1_000
+  )
+    throw new Error(
+      "CDC_DELIVERY_HEALTH_CHECK_INTERVAL_MS must be an integer of at least 1000",
+    );
+  const assertCdcDeliveryHealthy = async (): Promise<void> => {
+    await pool.query("SELECT event_store.assert_cdc_delivery_ready($1)", [
+      walBudget,
+    ]);
+    if (connectUrl !== undefined) {
+      const connector = await pool.query<{
+        cdc_connector_name: string;
+      }>(
+        "SELECT cdc_connector_name FROM event_store.runtime_config WHERE singleton",
+      );
+      const connectorName = connector.rows[0]?.cdc_connector_name;
+      if (connectorName === undefined)
+        throw new Error("CDC connector ownership is unavailable");
+      const status = await fetch(
+        `${connectUrl}/connectors/${encodeURIComponent(connectorName)}/status`,
+        { signal: AbortSignal.timeout(5_000) },
+      );
+      const body = (await status.json()) as {
+        connector?: { state?: string };
+        tasks?: { state?: string; worker_id?: string }[];
+      };
+      if (
+        !status.ok ||
+        body.connector?.state !== "RUNNING" ||
+        body.tasks?.length !== 1 ||
+        body.tasks[0]?.state !== "RUNNING"
+      )
+        throw new Error("CDC connector is not ready");
+      if (connectMetricsPort !== undefined) {
+        if (!/^\d+$/.test(connectMetricsPort))
+          throw new Error("CONNECT_METRICS_PORT must be numeric");
+        const workerId = body.tasks[0]?.worker_id;
+        const workerHost = workerId?.replace(/:\d+$/, "");
+        if (workerHost === undefined || workerHost === "")
+          throw new Error("CDC task worker id is unavailable");
+        const metrics = await fetch(
+          `http://${workerHost}:${connectMetricsPort}/metrics`,
+          { signal: AbortSignal.timeout(5_000) },
+        ).then((result) => {
+          if (!result.ok) throw new Error("Connect metrics are unavailable");
+          return result.text();
+        });
+        if (connectQueueRatio(metrics, connectorName) < 0.2)
+          throw new Error("CDC Connect queue is saturated");
+      }
+    }
+    if (kafkaBrokers !== undefined)
+      await verifyKafkaReadiness(kafkaBrokers, kafkaTopic, kafkaMinIsr);
+  };
+  const reconcileCdcDeliveryAdmission = async (): Promise<void> => {
+    try {
+      await assertCdcDeliveryHealthy();
+      await pool.query("SELECT event_store.set_cdc_delivery_health(true)");
+    } catch (error) {
+      // This is durable and is checked inside append_v1, so existing gRPC
+      // connections cannot continue writing after the next failed probe.
+      await pool
+        .query("SELECT event_store.set_cdc_delivery_health(false)")
+        .catch(() => undefined);
+      throw error;
+    }
+  };
+  let deliveryHealthCheckInFlight = false;
+  const runDeliveryHealthCheck = (): void => {
+    if (deliveryHealthCheckInFlight) return;
+    deliveryHealthCheckInFlight = true;
+    void reconcileCdcDeliveryAdmission()
+      .catch(() => undefined)
+      .finally(() => {
+        deliveryHealthCheckInFlight = false;
+      });
+  };
   const healthAddress = process.env.HTTP_LISTEN_ADDRESS;
   const health =
     healthAddress === undefined
@@ -511,56 +594,9 @@ export async function startServer(
               response.writeHead(404).end();
               return;
             }
-            // A ready endpoint means the standard path has an active logical
-            // consumer and the immutable outbox publication, not merely that
-            // its bounded inactive-slot WAL window remains open.
-            await pool.query(
-              "SELECT event_store.assert_cdc_delivery_ready($1)",
-              [walBudget],
-            );
-            if (connectUrl !== undefined) {
-              const connector = await pool.query<{
-                cdc_connector_name: string;
-              }>(
-                "SELECT cdc_connector_name FROM event_store.runtime_config WHERE singleton",
-              );
-              const connectorName = connector.rows[0]?.cdc_connector_name;
-              if (connectorName === undefined)
-                throw new Error("CDC connector ownership is unavailable");
-              const status = await fetch(
-                `${connectUrl}/connectors/${encodeURIComponent(connectorName)}/status`,
-              );
-              const body = (await status.json()) as {
-                connector?: { state?: string };
-                tasks?: { state?: string; worker_id?: string }[];
-              };
-              if (
-                !status.ok ||
-                body.connector?.state !== "RUNNING" ||
-                body.tasks?.length !== 1 ||
-                body.tasks[0]?.state !== "RUNNING"
-              )
-                throw new Error("CDC connector is not ready");
-              if (connectMetricsPort !== undefined) {
-                if (!/^\d+$/.test(connectMetricsPort))
-                  throw new Error("CONNECT_METRICS_PORT must be numeric");
-                const workerId = body.tasks[0]?.worker_id;
-                const workerHost = workerId?.replace(/:\d+$/, "");
-                if (workerHost === undefined || workerHost === "")
-                  throw new Error("CDC task worker id is unavailable");
-                const metrics = await fetch(
-                  `http://${workerHost}:${connectMetricsPort}/metrics`,
-                ).then((result) => {
-                  if (!result.ok)
-                    throw new Error("Connect metrics are unavailable");
-                  return result.text();
-                });
-                if (connectQueueRatio(metrics, connectorName) < 0.2)
-                  throw new Error("CDC Connect queue is saturated");
-              }
-            }
-            if (kafkaBrokers !== undefined)
-              await verifyKafkaReadiness(kafkaBrokers, kafkaTopic, kafkaMinIsr);
+            // Readiness also drives the durable append fence.  A 503 alone is
+            // insufficient because already-open gRPC connections can append.
+            await reconcileCdcDeliveryAdmission();
             response.writeHead(200).end("ready\n");
           })().catch(() => response.writeHead(503).end("not ready\n"));
         });
@@ -809,6 +845,12 @@ export async function startServer(
     ),
   );
   server.start();
+  runDeliveryHealthCheck();
+  const deliveryHealthTimer = setInterval(
+    runDeliveryHealthCheck,
+    deliveryHealthIntervalMs,
+  );
+  deliveryHealthTimer.unref();
   const grpcShutdown = server.tryShutdown.bind(server);
   server.tryShutdown = (callback) => {
     grpcShutdown(() => {
@@ -816,6 +858,7 @@ export async function startServer(
         await new Promise<void>(
           (resolve) => health?.close(() => resolve()) ?? resolve(),
         );
+        clearInterval(deliveryHealthTimer);
         await latencyProbe?.stop();
         await pool.end();
         await criticalPool?.end();

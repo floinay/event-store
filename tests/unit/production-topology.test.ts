@@ -76,12 +76,14 @@ describe("production HA topology", () => {
     expect(runtime).toContain("CONNECT_CONSUMER_ISOLATION_LEVEL");
     expect(runtime).toContain("CONNECT_PRODUCER_COMPRESSION_TYPE");
     expect(runtime).toContain("CDC_LATENCY_PROBE_INTERVAL_MS");
+    expect(runtime).toContain("CDC_DELIVERY_HEALTH_CHECK_INTERVAL_MS");
     expect(runtime).toContain("name: connect");
     expect(runtime).toContain('limits: { cpu: "2", memory: 4Gi }');
     expect(preflight).toContain("assert_configured_failover_candidate()");
     expect(runbook).toContain("CNPG may\nautomatically promote");
     expect(runbook).toContain("slot-loss recovery");
     expect(runbook).toContain("reconcile all `event_id` values");
+    expect(runbook).toContain("persistently closes\nappend admission");
     expect(bootstrap).toContain("event-store-kafka-kafka-bootstrap:9092");
     expect(bootstrap).toContain("http://event-store-connect:8083");
     expect(connector).toContain(

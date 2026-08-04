@@ -557,6 +557,22 @@ suite("append SQL contract", () => {
     ).rejects.toMatchObject({ code: "P0001" });
   });
 
+  it("durably rejects appends when delivery health closes CDC admission", async () => {
+    await pool.query(
+      "UPDATE event_store.runtime_config SET append_admission_enabled=true, cdc_delivery_healthy=false WHERE singleton",
+    );
+    try {
+      await expect(
+        store.append(appendInput(id(), id(), [{ orderRef: "delivery-fence" }])),
+      ).rejects.toMatchObject({ code: "P0001" });
+    } finally {
+      // This suite intentionally runs without CDC; restore storage-only mode.
+      await pool.query(
+        "UPDATE event_store.runtime_config SET append_admission_enabled=false WHERE singleton",
+      );
+    }
+  });
+
   it("restricts recovery CDC cutover to the CDC principal", async () => {
     await expect(
       pool.query<{ public_can_execute: boolean }>(
