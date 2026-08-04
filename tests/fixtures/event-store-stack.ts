@@ -271,6 +271,7 @@ EOF
     await admin.disconnect();
     this.#connectUsesKafkaProxy = options.connectKafkaProxy === true;
     await this.startConnect(options.toxiproxy === true);
+    await this.waitForLiveSlotActive();
     const admission = new Pool({ connectionString: this.databaseUrl });
     try {
       await admission.query(
@@ -491,6 +492,25 @@ EOF
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     throw new Error(`connector ${name} did not become RUNNING`);
+  }
+
+  private async waitForLiveSlotActive(): Promise<void> {
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const pool = new Pool({ connectionString: this.databaseUrl });
+      try {
+        const slot = await pool.query<{ active: boolean }>(
+          "SELECT active FROM pg_replication_slots WHERE slot_name='event_store_live'",
+        );
+        if (slot.rows[0]?.active === true) return;
+      } finally {
+        await pool.end();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(
+      "event_store_live did not become active after Connect started",
+    );
   }
 
   kafkaBroker(): string {

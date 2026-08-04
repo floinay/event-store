@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { GenericContainer, Network, Wait } from "testcontainers";
+import {
+  GenericContainer,
+  Network,
+  RandomPortGenerator,
+  Wait,
+} from "testcontainers";
 import { Pool } from "pg";
+import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { migrate } from "@event-store/migrate";
 import { reconcile } from "@event-store/reconcile";
 import { PostgresEventStore } from "@event-store/postgres-store";
@@ -25,8 +31,91 @@ suite("PostgreSQL HA promotion", () => {
   let network: Network;
   let primary: Awaited<ReturnType<GenericContainer["start"]>>;
   let standby: Awaited<ReturnType<GenericContainer["start"]>>;
+  let kafka: Awaited<ReturnType<GenericContainer["start"]>>;
+  let connect: Awaited<ReturnType<GenericContainer["start"]>>;
   let primaryUrl: string;
   let standbyUrl: string;
+  let kafkaBroker: string;
+  let connectUrl: string;
+
+  const waitForConnector = async (): Promise<void> => {
+    await eventually(async () => {
+      const status = (await fetch(
+        `${connectUrl}/connectors/event-store-live/status`,
+      ).then((response) => response.json())) as {
+        connector?: { state?: string };
+        tasks?: { state?: string }[];
+      };
+      return (
+        status.connector?.state === "RUNNING" &&
+        status.tasks?.length === 1 &&
+        status.tasks[0]?.state === "RUNNING"
+      );
+    });
+  };
+
+  const configureConnector = async (
+    databaseHostname: string,
+  ): Promise<void> => {
+    const response = await fetch(
+      `${connectUrl}/connectors/event-store-live/config`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          "connector.class":
+            "io.debezium.connector.postgresql.PostgresConnector",
+          "tasks.max": "1",
+          "database.hostname": databaseHostname,
+          "database.port": "5432",
+          "database.user": "event_store_cdc",
+          "database.password": "cdc",
+          "database.dbname": "event_store",
+          "topic.prefix": "event-store-cdc",
+          "plugin.name": "pgoutput",
+          "publication.name": "event_store_events",
+          "publication.autocreate.mode": "disabled",
+          "slot.name": "event_store_live",
+          "slot.drop.on.stop": "false",
+          "slot.failover": "true",
+          "schema.include.list": "event_store",
+          "table.include.list": "event_store.events",
+          "snapshot.mode": "no_data",
+          "poll.interval.ms": "2",
+          "max.batch.size": "2048",
+          "max.queue.size": "8192",
+          "lsn.flush.mode": "connector",
+          "offset.mismatch.strategy": "trust_offset",
+          "exactly.once.support": "required",
+          "transaction.boundary": "poll",
+          "errors.tolerance": "none",
+          predicates: "isCanonicalEvents",
+          "predicates.isCanonicalEvents.type":
+            "org.apache.kafka.connect.transforms.predicates.TopicNameMatches",
+          "predicates.isCanonicalEvents.pattern":
+            "event-store-cdc\\.event_store\\.events",
+          transforms: "outbox",
+          "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+          "transforms.outbox.predicate": "isCanonicalEvents",
+          "transforms.outbox.table.field.event.id": "event_id",
+          "transforms.outbox.table.field.event.key": "partition_key",
+          "transforms.outbox.table.field.event.type": "event_name",
+          "transforms.outbox.table.field.event.payload": "event_envelope",
+          "transforms.outbox.route.by.field": "topic_route",
+          "transforms.outbox.route.topic.regex": "(.*)",
+          "transforms.outbox.route.topic.replacement": "$1.events.v1",
+          "transforms.outbox.table.expand.json.payload": "false",
+          "transforms.outbox.table.op.invalid.behavior": "fatal",
+          "transforms.outbox.route.tombstone.on.empty.payload": "false",
+          "transforms.outbox.table.fields.additional.placement":
+            "event_id:header:id,event_name:header:type,envelope_sha256:header:envelopeHash,namespace:header:namespace,aggregate_type:header:aggregateType,stream_revision:header:streamRevision",
+        }),
+      },
+    );
+    if (!response.ok)
+      throw new Error(`connector creation failed: ${await response.text()}`);
+    await waitForConnector();
+  };
 
   beforeAll(async () => {
     network = await new Network().start();
@@ -101,8 +190,19 @@ suite("PostgreSQL HA promotion", () => {
         await pool.end();
       }
     });
+    const failoverPreflight = new Pool({ connectionString: standbyUrl });
+    try {
+      await expect(
+        failoverPreflight.query(
+          "SELECT event_store.assert_failover_candidate('event_store_live')",
+        ),
+      ).resolves.toBeDefined();
+    } finally {
+      await failoverPreflight.end();
+    }
     const pool = new Pool({ connectionString: primaryUrl });
     try {
+      await pool.query("ALTER ROLE event_store_cdc PASSWORD 'cdc'");
       await pool.query(
         "ALTER SYSTEM SET synchronous_standby_names = 'FIRST 1 (\"ha-standby\")'",
       );
@@ -132,6 +232,84 @@ suite("PostgreSQL HA promotion", () => {
         await pool.end();
       }
     });
+    const kafkaExternalPort = await new RandomPortGenerator().generatePort();
+    kafka = await new GenericContainer("apache/kafka:4.3.1")
+      .withEnvironment({
+        KAFKA_NODE_ID: "1",
+        KAFKA_PROCESS_ROLES: "broker,controller",
+        KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093",
+        KAFKA_LISTENERS:
+          "PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,EXTERNAL://0.0.0.0:9092",
+        KAFKA_ADVERTISED_LISTENERS: `PLAINTEXT://kafka:29092,EXTERNAL://localhost:${kafkaExternalPort}`,
+        KAFKA_LISTENER_SECURITY_PROTOCOL_MAP:
+          "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT",
+        KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT",
+        KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER",
+        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1",
+        KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1",
+        KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1",
+        KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false",
+      })
+      .withNetwork(network)
+      .withNetworkAliases("kafka")
+      .withExposedPorts({ container: 9092, host: kafkaExternalPort })
+      .withWaitStrategy(Wait.forLogMessage(/Kafka Server started/))
+      .start();
+    kafkaBroker = `${kafka.getHost()}:${kafka.getMappedPort(9092)}`;
+    const kafkaAdmin = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [kafkaBroker] },
+    }).admin();
+    await kafkaAdmin.connect();
+    await kafkaAdmin.createTopics({
+      topics: [
+        {
+          topic: "event-store.events.v1",
+          numPartitions: 24,
+          replicationFactor: 1,
+        },
+        {
+          topic: "_connect-event-store-configs",
+          numPartitions: 1,
+          replicationFactor: 1,
+          configEntries: [{ name: "cleanup.policy", value: "compact" }],
+        },
+        {
+          topic: "_connect-event-store-offsets",
+          numPartitions: 25,
+          replicationFactor: 1,
+          configEntries: [{ name: "cleanup.policy", value: "compact" }],
+        },
+        {
+          topic: "_connect-event-store-status",
+          numPartitions: 5,
+          replicationFactor: 1,
+          configEntries: [{ name: "cleanup.policy", value: "compact" }],
+        },
+      ],
+    });
+    await kafkaAdmin.disconnect();
+    connect = await new GenericContainer("quay.io/debezium/connect:3.6.0.Final")
+      .withEnvironment({
+        BOOTSTRAP_SERVERS: "kafka:29092",
+        GROUP_ID: "event-store-connect-ha",
+        CONFIG_STORAGE_TOPIC: "_connect-event-store-configs",
+        OFFSET_STORAGE_TOPIC: "_connect-event-store-offsets",
+        STATUS_STORAGE_TOPIC: "_connect-event-store-status",
+        CONFIG_STORAGE_REPLICATION_FACTOR: "1",
+        OFFSET_STORAGE_REPLICATION_FACTOR: "1",
+        STATUS_STORAGE_REPLICATION_FACTOR: "1",
+        KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter",
+        VALUE_CONVERTER: "org.apache.kafka.connect.storage.StringConverter",
+        EXACTLY_ONCE_SOURCE_SUPPORT: "enabled",
+        CONNECT_EXACTLY_ONCE_SOURCE_SUPPORT: "enabled",
+      })
+      .withNetwork(network)
+      .withNetworkAliases("connect")
+      .withExposedPorts(8083)
+      .withWaitStrategy(Wait.forHttp("/connector-plugins", 8083))
+      .start();
+    connectUrl = `http://${connect.getHost()}:${connect.getMappedPort(8083)}`;
+    await configureConnector("ha-primary");
     const admission = new Pool({ connectionString: primaryUrl });
     try {
       await admission.query(
@@ -143,85 +321,152 @@ suite("PostgreSQL HA promotion", () => {
   }, 180_000);
 
   afterAll(async () => {
+    await connect?.stop().catch(() => undefined);
+    await kafka?.stop().catch(() => undefined);
     await standby?.stop().catch(() => undefined);
     await primary?.stop().catch(() => undefined);
     await network?.stop().catch(() => undefined);
   }, 60_000);
 
-  it("requires synced logical slot before promotion and preserves reconciliation", async () => {
-    const pool = new Pool({ connectionString: primaryUrl });
-    try {
-      const store = new PostgresEventStore(pool);
-      const requestId = uuidv7();
-      await store.append({
-        producerService: "ha-test",
-        namespace: "ha",
-        aggregateType: "Probe",
-        aggregateId: uuidv7(),
-        requestId,
-        expectedRevision: { kind: "no_stream" },
-        context: {
-          requestId,
-          correlationId: uuidv7(),
-          causationId: null,
-          actor: { kind: "system", subjectRef: "ha-test" },
-        },
-        events: [
-          {
-            eventName: "ha.appended",
-            schemaVersion: 1,
-            occurredAt: new Date().toISOString(),
-            payload: { phase: "before-promotion" },
-          },
-        ],
-      });
-    } finally {
-      await pool.end();
-    }
-    const promotionStartedAt = Date.now();
-    await primary.stop();
-    const promote = await standby.exec([
-      "bash",
-      "-ceu",
-      'gosu postgres pg_ctl promote -D "$PGDATA"',
+  it("resumes Debezium delivery after promotion without losing acknowledged events", async () => {
+    const beforePromotionRequestId = uuidv7();
+    const afterPromotionRequestId = uuidv7();
+    const expectedRequestIds = new Set([
+      beforePromotionRequestId,
+      afterPromotionRequestId,
     ]);
-    expect(promote.exitCode).toBe(0);
-    await eventually(async () => {
-      const pool = new Pool({ connectionString: standbyUrl });
+    const receivedRequestIds = new Set<string>();
+    const consumer = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [kafkaBroker] },
+    }).consumer({
+      kafkaJS: {
+        groupId: `ha-promotion-${uuidv7()}`,
+        autoCommit: false,
+        fromBeginning: true,
+        readUncommitted: false,
+      },
+    });
+    await consumer.connect();
+    await consumer.subscribe({
+      topics: ["event-store.events.v1"],
+      replace: true,
+    });
+    let delivered!: () => void;
+    let rejected!: (error: Error) => void;
+    const allDelivered = new Promise<void>((resolve, reject) => {
+      delivered = resolve;
+      rejected = reject;
+    });
+    const deliveryTimeout = setTimeout(
+      () =>
+        rejected(new Error("CDC did not deliver every failover-window event")),
+      60_000,
+    );
+    await consumer.run({
+      eachMessage: async ({ message }) => {
+        const envelope = JSON.parse(message.value?.toString() ?? "{}") as {
+          context?: { requestId?: string };
+        };
+        const requestId = envelope.context?.requestId;
+        if (requestId !== undefined && expectedRequestIds.has(requestId)) {
+          receivedRequestIds.add(requestId);
+          if (receivedRequestIds.size === expectedRequestIds.size) delivered();
+        }
+      },
+    });
+    const appendProbe = async (
+      databaseUrl: string,
+      requestId: string,
+      phase: string,
+    ): Promise<void> => {
+      const pool = new Pool({ connectionString: databaseUrl });
       try {
-        return (
-          (
-            await pool.query<{ recovery: boolean }>(
-              "SELECT pg_is_in_recovery() AS recovery",
-            )
-          ).rows[0]?.recovery === false
-        );
+        await new PostgresEventStore(pool).append({
+          producerService: "ha-test",
+          namespace: "ha",
+          aggregateType: "Probe",
+          aggregateId: uuidv7(),
+          requestId,
+          expectedRevision: { kind: "no_stream" },
+          context: {
+            requestId,
+            correlationId: uuidv7(),
+            causationId: null,
+            actor: { kind: "system", subjectRef: "ha-test" },
+          },
+          events: [
+            {
+              eventName: "ha.appended",
+              schemaVersion: 1,
+              occurredAt: new Date().toISOString(),
+              payload: { phase },
+            },
+          ],
+        });
       } finally {
         await pool.end();
       }
-    });
-    expect(Date.now() - promotionStartedAt).toBeLessThanOrEqual(60_000);
-    await expect(reconcile(standbyUrl)).resolves.toMatchObject({
-      count: "1",
-      revisionGaps: "0",
-      envelopeHashMismatches: "0",
-    });
-    const promoted = new Pool({ connectionString: standbyUrl });
+    };
     try {
-      const slot = await promoted.query<{
-        failover: boolean;
-        temporary: boolean;
-        invalidation_reason: string | null;
-      }>(
-        "SELECT failover, temporary, invalidation_reason FROM pg_replication_slots WHERE slot_name='event_store_live'",
+      await appendProbe(
+        primaryUrl,
+        beforePromotionRequestId,
+        "before-promotion",
       );
-      expect(slot.rows[0]).toMatchObject({
-        failover: true,
-        temporary: false,
-        invalidation_reason: null,
+      await eventually(async () =>
+        receivedRequestIds.has(beforePromotionRequestId),
+      );
+      const promotionStartedAt = Date.now();
+      await primary.stop();
+      const promote = await standby.exec([
+        "bash",
+        "-ceu",
+        'gosu postgres pg_ctl promote -D "$PGDATA"',
+      ]);
+      expect(promote.exitCode).toBe(0);
+      await eventually(async () => {
+        const pool = new Pool({ connectionString: standbyUrl });
+        try {
+          return (
+            (
+              await pool.query<{ recovery: boolean }>(
+                "SELECT pg_is_in_recovery() AS recovery",
+              )
+            ).rows[0]?.recovery === false
+          );
+        } finally {
+          await pool.end();
+        }
       });
+      expect(Date.now() - promotionStartedAt).toBeLessThanOrEqual(60_000);
+      await configureConnector("ha-standby");
+      await appendProbe(standbyUrl, afterPromotionRequestId, "after-promotion");
+      await allDelivered;
+      await expect(reconcile(standbyUrl)).resolves.toMatchObject({
+        count: "2",
+        revisionGaps: "0",
+        envelopeHashMismatches: "0",
+      });
+      const promoted = new Pool({ connectionString: standbyUrl });
+      try {
+        const slot = await promoted.query<{
+          failover: boolean;
+          temporary: boolean;
+          invalidation_reason: string | null;
+        }>(
+          "SELECT failover, temporary, invalidation_reason FROM pg_replication_slots WHERE slot_name='event_store_live'",
+        );
+        expect(slot.rows[0]).toMatchObject({
+          failover: true,
+          temporary: false,
+          invalidation_reason: null,
+        });
+      } finally {
+        await promoted.end();
+      }
     } finally {
-      await promoted.end();
+      clearTimeout(deliveryTimeout);
+      await consumer.disconnect().catch(() => undefined);
     }
   }, 90_000);
 });
