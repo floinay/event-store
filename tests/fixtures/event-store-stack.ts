@@ -15,6 +15,7 @@ export class EventStoreStack {
   #toxiproxy?: Awaited<ReturnType<ToxiProxyContainer["start"]>>;
   #postgresConnectProxy?: CreatedProxy;
 
+
   get databaseUrl(): string {
     if (this.#postgres === undefined) throw new Error("stack is not started");
     return `postgresql://postgres:postgres@${this.#postgres.getHost()}:${this.#postgres.getMappedPort(5432)}/event_store`;
@@ -49,6 +50,12 @@ export class EventStoreStack {
         "synchronous_commit=on",
         "-c",
         "track_commit_timestamp=off",
+        "-c",
+        "archive_mode=on",
+        "-c",
+        "archive_timeout=1s",
+        "-c",
+        "archive_command=mkdir -p /var/lib/postgresql/archive && test ! -f /var/lib/postgresql/archive/%f && cp %p /var/lib/postgresql/archive/%f",
       ])
       .withNetwork(this.#network)
       .withNetworkAliases("postgres")

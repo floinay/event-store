@@ -12,6 +12,12 @@ services:
         "max_wal_senders=10",
         "-c",
         "synchronous_commit=on",
+        "-c",
+        "archive_mode=on",
+        "-c",
+        "archive_timeout=60s",
+        "-c",
+        "archive_command=mkdir -p /var/lib/postgresql/archive && test ! -f /var/lib/postgresql/archive/%f && cp %p /var/lib/postgresql/archive/%f",
       ]
     environment:
       POSTGRES_USER: postgres
@@ -23,6 +29,9 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - postgres-wal-archive:/var/lib/postgresql/archive
   kafka:
     image: apache/kafka:4.3.1
     hostname: kafka
@@ -57,3 +66,6 @@ services:
       VALUE_CONVERTER: org.apache.kafka.connect.storage.StringConverter
       EXACTLY_ONCE_SOURCE_SUPPORT: enabled
       CONNECT_EXACTLY_ONCE_SOURCE_SUPPORT: enabled
+volumes:
+  postgres-data:
+  postgres-wal-archive:
