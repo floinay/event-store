@@ -310,9 +310,13 @@ export async function startServer(): Promise<grpc.Server> {
               response.writeHead(404).end();
               return;
             }
-            await pool.query("SELECT event_store.assert_append_cdc_ready($1)", [
-              walBudget,
-            ]);
+            // Readiness represents the standard client path. Critical writers
+            // have a separate mTLS policy and must not mask the 70% stop that
+            // protects ordinary append availability.
+            await pool.query(
+              "SELECT event_store.assert_append_cdc_ready($1, false)",
+              [walBudget],
+            );
             if (connectUrl !== undefined) {
               const connector = await pool.query<{
                 cdc_connector_name: string;
