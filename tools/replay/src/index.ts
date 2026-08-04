@@ -86,10 +86,22 @@ export async function ensureReplayTopic(
       ],
     });
     const metadata = await admin.fetchTopicMetadata({ topics: [topic] });
-    if (metadata[0]?.partitions.length !== kafkaPartitionCount)
+    const partitions = metadata[0]?.partitions;
+    if (partitions?.length !== kafkaPartitionCount)
       throw new Error(
         `replay topic ${topic} must have ${kafkaPartitionCount} partitions`,
       );
+    const minInSyncReplicas = Math.min(2, replicationFactor);
+    for (const partition of partitions) {
+      if (partition.replicas.length !== replicationFactor)
+        throw new Error(
+          `replay topic ${topic}/${partition.partitionId} has RF=${partition.replicas.length}; expected ${replicationFactor}`,
+        );
+      if (partition.isr.length < minInSyncReplicas)
+        throw new Error(
+          `replay topic ${topic}/${partition.partitionId} has ISR=${partition.isr.length}; requires ${minInSyncReplicas}`,
+        );
+    }
   } finally {
     await admin.disconnect();
   }
