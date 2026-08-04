@@ -851,6 +851,58 @@ suite("append SQL contract", () => {
     }
   });
 
+  it("does not let bootstrap reopen an unreconciled delivery incident", async () => {
+    const original = await pool.query<{
+      append_admission_enabled: boolean;
+      cdc_bootstrap_complete: boolean;
+      cdc_delivery_healthy: boolean;
+      cdc_delivery_timeline_id: number | null;
+      cdc_reconciliation_required: boolean;
+      cdc_delivery_incident_epoch: string;
+      cdc_reconciled_incident_epoch: string | null;
+      wal_budget_bytes: string;
+    }>(
+      `SELECT append_admission_enabled,cdc_bootstrap_complete,cdc_delivery_healthy,
+              cdc_delivery_timeline_id,cdc_reconciliation_required,
+              cdc_delivery_incident_epoch,cdc_reconciled_incident_epoch,wal_budget_bytes
+         FROM event_store.runtime_config WHERE singleton`,
+    );
+    try {
+      await pool.query(
+        `UPDATE event_store.runtime_config
+            SET append_admission_enabled=false,cdc_delivery_healthy=false,
+                cdc_reconciliation_required=true,cdc_delivery_incident_epoch=7,
+                cdc_reconciled_incident_epoch=6,
+                cdc_delivery_timeline_id=event_store.current_timeline_id()
+          WHERE singleton`,
+      );
+      await expect(
+        pool.query("SELECT event_store.enable_append_admission(8589934592)"),
+      ).rejects.toMatchObject({ code: "P0001" });
+    } finally {
+      const row = original.rows[0];
+      if (row !== undefined)
+        await pool.query(
+          `UPDATE event_store.runtime_config
+              SET append_admission_enabled=$1,cdc_bootstrap_complete=$2,
+                  cdc_delivery_healthy=$3,cdc_delivery_timeline_id=$4,
+                  cdc_reconciliation_required=$5,cdc_delivery_incident_epoch=$6,
+                  cdc_reconciled_incident_epoch=$7,wal_budget_bytes=$8
+            WHERE singleton`,
+          [
+            row.append_admission_enabled,
+            row.cdc_bootstrap_complete,
+            row.cdc_delivery_healthy,
+            row.cdc_delivery_timeline_id,
+            row.cdc_reconciliation_required,
+            row.cdc_delivery_incident_epoch,
+            row.cdc_reconciled_incident_epoch,
+            row.wal_budget_bytes,
+          ],
+        );
+    }
+  });
+
   it("rejects append admission for a non-failover CDC slot", async () => {
     const original = await pool.query<{ cdc_slot_name: string }>(
       "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
