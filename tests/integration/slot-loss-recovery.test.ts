@@ -106,6 +106,14 @@ suite("logical slot-loss recovery", () => {
         "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
       ),
     ).resolves.toMatchObject({ rows: [{ cdc_slot_name: recoverySlot }] });
+    await pool.query("SELECT event_store.enable_append_admission($1)", [
+      (8n * 1024n ** 3n).toString(),
+    ]);
+    await expect(
+      pool.query(
+        "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
+      ),
+    ).resolves.toMatchObject({ rows: [{ cdc_slot_name: recoverySlot }] });
     await expect(
       fetch(`${stack.connectUrl}/connectors/${recoveryConnector}/status`),
     ).resolves.toMatchObject({ status: 200 });
