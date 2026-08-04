@@ -31,6 +31,8 @@ spec:
             - { name: grpc, containerPort: 50051 }
             - { name: http, containerPort: 8080 }
           env:
+            - name: NODE_OPTIONS
+              value: --max-old-space-size=6144
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef: { name: event-store-app, key: database-url }
@@ -65,6 +67,9 @@ spec:
             - name: GRPC_TLS_CA_PEM
               valueFrom:
                 secretKeyRef: { name: event-store-grpc-tls, key: ca.pem }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits: { cpu: "2", memory: 8Gi }
           readinessProbe:
             httpGet: { path: /readyz, port: http }
 ---

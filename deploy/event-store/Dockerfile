@@ -10,6 +10,7 @@ RUN npm ci && npm run build
 FROM node:24.18.0-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
+ENV NODE_OPTIONS=--max-old-space-size=6144
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/event-store-service/dist ./apps/event-store-service/dist
 COPY --from=build /app/packages ./packages

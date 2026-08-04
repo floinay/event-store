@@ -48,6 +48,9 @@ describe("production HA topology", () => {
     expect(runtime).toContain("jmx-exporter");
     expect(runtime).toContain("PRODUCER_SERVICE");
     expect(runtime).toContain("HTTP_LISTEN_ADDRESS");
+    expect(runtime).toContain("NODE_OPTIONS");
+    expect(runtime).toContain("--max-old-space-size=6144");
+    expect(runtime).toContain("memory: 8Gi");
     expect(runtime).toContain("GRPC_TLS_CERT_PEM");
     expect(runtime).toContain("event-store-grpc-tls");
     expect(runtime).toContain("CRITICAL_DATABASE_URL");
