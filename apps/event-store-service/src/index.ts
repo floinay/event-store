@@ -433,7 +433,16 @@ export async function startServer(): Promise<grpc.Server> {
         );
         call.sendMetadata(commitMetadata);
         callback(null, {
-          ...result,
+          namespace: call.request.namespace,
+          aggregate_type: call.request.aggregate_type,
+          aggregate_id: call.request.aggregate_id,
+          previous_revision: result.previousRevision,
+          current_revision: result.currentRevision,
+          events: result.events.map((event) => ({
+            event_id: event.eventId,
+            event_number: event.eventNumber,
+            stream_revision: event.streamRevision,
+          })),
           acknowledged_at: new Date().toISOString(),
         });
         metrics.appendCount += 1;

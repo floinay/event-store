@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { uuidv7 } from "@event-store/contracts";
 import { startServer } from "../../apps/event-store-service/dist/index.js";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
-import type { Pool } from "pg";
 
 const suite = process.env.RUN_LATENCY === "true" ? describe : describe.skip;
 const sampleCount = Number(process.env.LATENCY_SAMPLE_COUNT ?? 100);
@@ -16,7 +15,12 @@ const durationMs = Number(process.env.LATENCY_DURATION_MS ?? 0);
 interface AppendClient extends grpc.Client {
   AppendToStream(
     request: Record<string, unknown>,
-    callback: (error: grpc.ServiceError | null) => void,
+    callback: (
+      error: grpc.ServiceError | null,
+      response?: {
+        events?: { event_id?: string; eventId?: string }[];
+      },
+    ) => void,
   ): grpc.ClientUnaryCall;
 }
 
@@ -30,10 +34,8 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
   const stack = new EventStoreStack();
   let server: grpc.Server;
   let client: AppendClient;
-  let database: Pool;
   beforeAll(async () => {
     await stack.start({ cdc: true });
-    database = await stack.pool();
     process.env.DATABASE_URL = stack.databaseUrl;
     process.env.PRODUCER_SERVICE = "latency-probe";
     process.env.CDC_WAL_BUDGET_BYTES = String(8 * 1024 ** 3);
@@ -59,7 +61,6 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
   afterAll(async () => {
     client?.close();
     await new Promise<void>((resolve) => server?.tryShutdown(() => resolve()));
-    await database?.end();
     await stack.stop();
   }, 60_000);
 
@@ -92,7 +93,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       topics: ["event-store.events.v1"],
       replace: true,
     });
-    const warmupRequestId = uuidv7();
+    let warmupEventId: string | undefined;
     let appendsFinished = false;
     let warmupObserved!: () => void;
     const warmup = new Promise<void>((resolve) => {
@@ -107,28 +108,12 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       );
       void consumer.run({
         eachMessage: async ({ message }) => {
-          const event = JSON.parse(message.value?.toString() ?? "{}") as {
-            context?: { requestId?: string };
-            recordedAt?: string;
-          };
-          if (event.context?.requestId === warmupRequestId) warmupObserved();
-          else if (
-            event.context?.requestId !== undefined &&
-            event.recordedAt !== undefined &&
-            committed.has(event.context.requestId)
-          ) {
-            const committedAt = Date.parse(event.recordedAt);
-            const observedAt = await database.query<{ now_ms: string }>(
-              "SELECT (extract(epoch FROM clock_timestamp()) * 1000)::text AS now_ms",
-            );
-            if (Number.isFinite(committedAt)) {
-              committed.set(event.context.requestId, committedAt);
-              observed.set(
-                event.context.requestId,
-                Number(observedAt.rows[0]?.now_ms),
-              );
-            }
-          }
+          // Take this span before JSON parsing, schema validation or a handler.
+          const receivedAt = performance.now();
+          const eventId = headerText(message.headers?.id);
+          if (eventId === undefined) return;
+          observed.set(eventId, receivedAt);
+          if (eventId === warmupEventId) warmupObserved();
           if (appendsFinished && allSamplesReceived(committed, observed)) {
             clearTimeout(deadline);
             received();
@@ -136,7 +121,9 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         },
       });
     });
-    await append(client, warmupRequestId, uuidv7(), "warmup");
+    warmupEventId = (await append(client, uuidv7(), uuidv7(), "warmup"))
+      .eventId;
+    if (observed.has(warmupEventId)) warmupObserved();
     await warmup;
     const deadline = performance.now() + durationMs;
     let index = 0;
@@ -145,9 +132,13 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         Array.from({ length: concurrency }, async () => {
           const requestId = uuidv7();
           const aggregateId = uuidv7();
-          // Register before append so a very fast consumer cannot drop it.
-          committed.set(requestId, Number.NaN);
-          await append(client, requestId, aggregateId, String(index++));
+          const appendResult = await append(
+            client,
+            requestId,
+            aggregateId,
+            String(index++),
+          );
+          committed.set(appendResult.eventId, appendResult.commitMonotonicMs);
         }),
       );
     } while (committed.size < sampleCount || performance.now() < deadline);
@@ -198,8 +189,9 @@ function append(
   requestId: string,
   aggregateId: string,
   index: string,
-): Promise<void> {
+): Promise<{ eventId: string; commitMonotonicMs: number }> {
   return new Promise((resolve, reject) => {
+    let commitMonotonicMs: number | undefined;
     const call = client.AppendToStream(
       {
         request_id: requestId,
@@ -222,14 +214,35 @@ function append(
           },
         ],
       },
-      (error) => {
+      (error, response) => {
         if (error !== null) {
           reject(error);
           return;
         }
-        resolve();
+        const eventId =
+          response?.events?.[0]?.event_id ?? response?.events?.[0]?.eventId;
+        if (eventId === undefined || commitMonotonicMs === undefined) {
+          reject(
+            new Error(
+              `append acknowledgement omitted event ID or commit span: ${JSON.stringify(response)}`,
+            ),
+          );
+          return;
+        }
+        resolve({ eventId, commitMonotonicMs });
       },
     );
-    call.once("metadata", () => undefined);
+    call.once("metadata", (metadata) => {
+      const value = metadata.get("x-event-store-commit-monotonic-ms")[0];
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) commitMonotonicMs = parsed;
+    });
   });
+}
+
+function headerText(
+  value: Buffer | Buffer[] | string | string[] | undefined,
+): string | undefined {
+  const first = Array.isArray(value) ? value[0] : value;
+  return first === undefined ? undefined : first.toString();
 }
