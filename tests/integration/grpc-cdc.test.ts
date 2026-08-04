@@ -241,6 +241,22 @@ suite("gRPC to CDC", () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       expect(metrics).toContain("event_store_cdc_latency_probe_up 0");
+      await eventually(async () => {
+        const outagePool = await stack.pool();
+        try {
+          const incident = await outagePool.query<{
+            cdc_reconciliation_required: boolean;
+          }>(
+            "SELECT cdc_reconciliation_required FROM event_store.runtime_config WHERE singleton",
+          );
+          return incident.rows[0]?.cdc_reconciliation_required === true;
+        } finally {
+          await outagePool.end();
+        }
+      });
+      await expect(
+        fetch("http://127.0.0.1:50164/readyz"),
+      ).resolves.toMatchObject({ status: 503 });
       await expect(
         new Promise<Record<string, unknown>>((resolve, reject) =>
           client.AppendToStream(
@@ -272,6 +288,20 @@ suite("gRPC to CDC", () => {
       ).rejects.toMatchObject({ code: grpc.status.RESOURCE_EXHAUSTED });
     } finally {
       await stack.setConnectKafkaEnabled(true);
+      const cleanupPool = await stack.pool();
+      try {
+        // The test's probe inbox is intentionally observational only, so it
+        // cannot supply the production reconciliation proof. Restore the
+        // shared fixture after asserting that the incident stays fenced.
+        await cleanupPool.query(
+          `UPDATE event_store.runtime_config
+              SET cdc_reconciliation_required=false,
+                  cdc_reconciled_incident_epoch=cdc_delivery_incident_epoch
+            WHERE singleton`,
+        );
+      } finally {
+        await cleanupPool.end();
+      }
       await new Promise<void>((resolve) => probeServer.tryShutdown(resolve));
       const recoveryDeadline = Date.now() + 30_000;
       while (Date.now() < recoveryDeadline) {

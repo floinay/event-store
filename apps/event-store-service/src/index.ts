@@ -160,6 +160,7 @@ async function startCdcLatencyProbe(
   let lastMeasurementTimelineId: number | undefined;
   let lastFailureEpochMs: number | undefined;
   const staleAfterMs = intervalMs * 3;
+  const warmupStartedEpochMs = Date.now();
   await consumer.connect();
   await consumer.subscribe({ topics: [topic], replace: true });
   await consumer.run({
@@ -207,7 +208,7 @@ async function startCdcLatencyProbe(
         lastFailureEpochMs = undefined;
       }
     }
-    const cutoff = Date.now() - 300_000;
+    const cutoff = Date.now() - staleAfterMs;
     for (const [id, committedAt] of pending)
       if (committedAt.commitEpochMs < cutoff) {
         pending.delete(id);
@@ -218,7 +219,14 @@ async function startCdcLatencyProbe(
   };
   const publishSafely = (): void => {
     void publish().catch(() => {
-      lastFailureEpochMs = Date.now();
+      // A connector/consumer commonly needs a short time to establish its
+      // first delivery path. Once that bounded window expires, an error is a
+      // real delivery failure and must create a durable reconciliation fence.
+      if (
+        lastMeasurementEpochMs !== undefined ||
+        Date.now() - warmupStartedEpochMs >= staleAfterMs
+      )
+        lastFailureEpochMs = Date.now();
     });
   };
   const timer = setInterval(publishSafely, intervalMs);
@@ -231,7 +239,10 @@ async function startCdcLatencyProbe(
       (timelineId === undefined || lastMeasurementTimelineId === timelineId) &&
       Date.now() - lastMeasurementEpochMs <= staleAfterMs &&
       lastFailureEpochMs === undefined,
-    warmingUp: () => connected && lastMeasurementEpochMs === undefined,
+    warmingUp: () =>
+      connected &&
+      lastMeasurementEpochMs === undefined &&
+      Date.now() - warmupStartedEpochMs < staleAfterMs,
     stop: async () => {
       connected = false;
       clearInterval(timer);
