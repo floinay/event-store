@@ -94,7 +94,15 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     serviceProcess = spawn(
       process.execPath,
       [join(process.cwd(), "apps/event-store-service/dist/index.js")],
-      { env: process.env, stdio: "ignore" },
+      {
+        env: {
+          ...process.env,
+          // Keep the measured service under the same production GC ceiling as
+          // the deployed Event Store pods.
+          NODE_OPTIONS: "--max-old-space-size=6144",
+        },
+        stdio: "ignore",
+      },
     );
     const definition = protoLoader.loadSync(
       join(process.cwd(), "packages/contracts/proto/event_store.proto"),
