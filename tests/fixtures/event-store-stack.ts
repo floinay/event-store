@@ -530,7 +530,6 @@ EOF
           "offset.mismatch.strategy": "trust_offset",
           "exactly.once.support": "required",
           "transaction.boundary": "poll",
-          "heartbeat.interval.ms": "5000",
           "provide.transaction.metadata": "false",
           "producer.override.acks": "all",
           "producer.override.enable.idempotence": "true",

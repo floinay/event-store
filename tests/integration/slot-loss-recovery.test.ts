@@ -116,6 +116,17 @@ suite("logical slot-loss recovery", () => {
       schemas,
     );
     await eventually(async () => {
+      const failures = await pool.query<{ error_detail: { message: string } }>(
+        `SELECT error_detail FROM projection_runtime.failures
+         WHERE projection_name=$1 AND generation_id=$2`,
+        [projectionName, generationId],
+      );
+      if (failures.rows.length > 0)
+        throw new Error(
+          `recovery projection failed: ${failures.rows
+            .map((row) => row.error_detail.message)
+            .join(", ")}`,
+        );
       const result = await pool.query<{ count: number }>(
         "SELECT count(*)::int AS count FROM recovery_model.events",
       );
@@ -139,6 +150,9 @@ suite("logical slot-loss recovery", () => {
     ).resolves.toMatchObject({ rows: [{ count: barriers.length }] });
     await observeBarrierTransport(
       stack,
+      pool,
+      recoverySlot,
+      recoveryConnector,
       barriers.map((barrier) => barrier.eventId),
     );
     await eventually(async () => {
@@ -269,6 +283,9 @@ async function startRecoveryProjection(
 
 async function observeBarrierTransport(
   stack: EventStoreStack,
+  pool: Pool,
+  recoverySlot: string,
+  connectorName: string,
   eventIds: readonly string[],
 ): Promise<void> {
   const kafka = new KafkaJS.Kafka({
@@ -284,6 +301,7 @@ async function observeBarrierTransport(
   });
   const expected = new Set(eventIds);
   const observed = new Set<string>();
+  let received = 0;
   await consumer.connect();
   await consumer.subscribe({
     topics: ["event-store.events.v1"],
@@ -291,23 +309,56 @@ async function observeBarrierTransport(
   });
   try {
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () =>
-          reject(new Error("recovery connector did not deliver all barriers")),
-        60_000,
-      );
+      const timeout = setTimeout(() => {
+        const admin = kafka.admin();
+        void Promise.all([
+          fetch(`${stack.connectUrl}/connectors/${connectorName}/status`).then(
+            (response) => response.text(),
+          ),
+          pool.query(
+            `SELECT active, restart_lsn::text, confirmed_flush_lsn::text,
+                    pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)::bigint
+                       AS unconfirmed_wal_bytes
+               FROM pg_replication_slots
+              WHERE slot_name=$1`,
+            [recoverySlot],
+          ),
+          admin.connect().then(async () => {
+            try {
+              return await admin.fetchTopicOffsets("event-store.events.v1");
+            } finally {
+              await admin.disconnect();
+            }
+          }),
+        ])
+          .then(([status, slot, offsets]) =>
+            reject(
+              new Error(
+                `recovery connector did not deliver all barriers; received ${received}, observed ${observed.size}/${expected.size}; slot ${JSON.stringify(slot.rows[0] ?? null)}; offsets ${JSON.stringify(offsets)}; status ${status}`,
+              ),
+            ),
+          )
+          .catch(reject);
+      }, 60_000);
       void consumer.run({
         eachMessage: async ({ message }) => {
+          received += 1;
           const value = message.value?.toString() ?? "";
           const event = JSON.parse(value || "{}") as {
             eventId?: string;
             recordedAt?: string;
           };
           if (event.eventId !== undefined && expected.has(event.eventId)) {
-            expect(value).toBe(canonicalJson(event));
-            expect(message.timestamp).toBe(
-              String(Date.parse(event.recordedAt!)),
-            );
+            try {
+              expect(value).toBe(canonicalJson(event));
+              expect(message.timestamp).toBe(
+                String(Date.parse(event.recordedAt!)),
+              );
+            } catch (error) {
+              clearTimeout(timeout);
+              reject(error);
+              return;
+            }
             observed.add(event.eventId);
           }
           if (observed.size === expected.size) {
