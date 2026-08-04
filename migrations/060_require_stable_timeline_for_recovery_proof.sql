@@ -10,7 +10,7 @@ CREATE FUNCTION event_store.verify_recovery_cdc_cutover(
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, event_store, projection_runtime
 AS $$
-DECLARE v_barriers integer; v_partitions integer; v_missing integer; v_failures integer;
+DECLARE v_barriers integer; v_partitions integer; v_missing integer; v_unknown integer; v_failures integer;
 BEGIN
   IF p_slot_name !~ '^event_store_[a-z0-9_]{1,50}$'
      OR p_connector_name !~ '^event-store-[a-z0-9-]{1,63}$'
@@ -37,6 +37,10 @@ BEGIN
     SELECT 1 FROM projection_runtime.inbox i WHERE i.projection_name=p_projection_name
       AND i.generation_id=p_generation_id AND i.event_id=e.event_id);
   IF v_missing <> 0 THEN RAISE EXCEPTION 'recovery event-id reconciliation is incomplete' USING ERRCODE='P0001'; END IF;
+  SELECT count(*)::int INTO v_unknown FROM projection_runtime.inbox i WHERE i.projection_name=p_projection_name
+    AND i.generation_id=p_generation_id AND NOT EXISTS (
+      SELECT 1 FROM event_store.events e WHERE e.event_id=i.event_id);
+  IF v_unknown <> 0 THEN RAISE EXCEPTION 'recovery event-id reconciliation is incomplete' USING ERRCODE='P0001'; END IF;
   SELECT count(*)::int INTO v_failures FROM projection_runtime.failures
    WHERE projection_name=p_projection_name AND generation_id=p_generation_id;
   IF v_failures <> 0 THEN RAISE EXCEPTION 'recovery projection has failures' USING ERRCODE='P0001'; END IF;

@@ -259,9 +259,12 @@ suite("logical slot-loss recovery", () => {
         recoveryId,
       ),
     );
-    await new RecoveryCutoverCoordinator(pool, stack.connectUrl, [
-      stack.kafkaBroker(),
-    ]).activate(recoverySlot, recoveryConnector, 8n * 1024n ** 3n, {
+    const recoveryCoordinator = new RecoveryCutoverCoordinator(
+      pool,
+      stack.connectUrl,
+      [stack.kafkaBroker()],
+    );
+    const verification = {
       projectionName,
       generationId,
       replayId: recoveryId,
@@ -275,7 +278,32 @@ suite("logical slot-loss recovery", () => {
         ))
           ? 0n
           : 1n,
-    });
+    };
+    const unknownEventId = uuidv7();
+    await pool.query(
+      `INSERT INTO projection_runtime.inbox(
+         projection_name,generation_id,event_id,envelope_sha256,topic_name,partition_no,kafka_offset,processed_at
+       ) VALUES ($1,$2,$3,$4,'event-store.events.v1',23,9223372036854775806,clock_timestamp())`,
+      [projectionName, generationId, unknownEventId, "0".repeat(64)],
+    );
+    await expect(
+      recoveryCoordinator.activate(
+        recoverySlot,
+        recoveryConnector,
+        8n * 1024n ** 3n,
+        verification,
+      ),
+    ).rejects.toMatchObject({ code: "P0001" });
+    await pool.query(
+      "DELETE FROM projection_runtime.inbox WHERE projection_name=$1 AND generation_id=$2 AND event_id=$3",
+      [projectionName, generationId, unknownEventId],
+    );
+    await recoveryCoordinator.activate(
+      recoverySlot,
+      recoveryConnector,
+      8n * 1024n ** 3n,
+      verification,
+    );
     const verificationTimeline = await pool.query<{
       verified_timeline_id: number;
       current_timeline_id: number;
