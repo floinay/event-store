@@ -7,6 +7,7 @@ import {
 import {
   ToxiProxyContainer,
   type CreatedProxy,
+  type TPClient,
 } from "@testcontainers/toxiproxy";
 import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
@@ -537,6 +538,38 @@ EOF
     if (this.#postgresConnectProxy === undefined)
       throw new Error("Postgres-to-Connect Toxiproxy is not configured");
     await this.#postgresConnectProxy.setEnabled(enabled);
+  }
+
+  async addPostgresConnectLatency(
+    milliseconds: number,
+  ): Promise<TPClient.Toxic<TPClient.Latency>> {
+    if (!Number.isInteger(milliseconds) || milliseconds < 0)
+      throw new TypeError("milliseconds must be a non-negative integer");
+    if (this.#postgresConnectProxy === undefined)
+      throw new Error("Postgres-to-Connect Toxiproxy is not configured");
+    return this.#postgresConnectProxy.instance.addToxic({
+      name: `pg-connect-latency-${milliseconds}`,
+      type: "latency",
+      stream: "downstream",
+      toxicity: 1,
+      attributes: { latency: milliseconds, jitter: 0 },
+    });
+  }
+
+  async addPostgresConnectBandwidthLimit(
+    kilobytesPerSecond: number,
+  ): Promise<TPClient.Toxic<TPClient.Bandwidth>> {
+    if (!Number.isInteger(kilobytesPerSecond) || kilobytesPerSecond <= 0)
+      throw new TypeError("kilobytesPerSecond must be a positive integer");
+    if (this.#postgresConnectProxy === undefined)
+      throw new Error("Postgres-to-Connect Toxiproxy is not configured");
+    return this.#postgresConnectProxy.instance.addToxic({
+      name: `pg-connect-bandwidth-${kilobytesPerSecond}`,
+      type: "bandwidth",
+      stream: "downstream",
+      toxicity: 1,
+      attributes: { rate: kilobytesPerSecond },
+    });
   }
 
   async setConnectKafkaEnabled(enabled: boolean): Promise<void> {

@@ -86,4 +86,106 @@ suite("PG to Connect network recovery", () => {
     await expect(delivered).resolves.toBeUndefined();
     await consumer.disconnect();
   }, 60_000);
+
+  it("retains acknowledged events through latency and bandwidth faults", async () => {
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [stack.kafkaBroker()] },
+    });
+    const consumer = kafka.consumer({
+      kafkaJS: {
+        groupId: `network-profiles-${uuidv7()}`,
+        autoCommit: false,
+        fromBeginning: true,
+        readUncommitted: false,
+      },
+    });
+    const expected = new Set<string>();
+    const received = new Set<string>();
+    let complete!: () => void;
+    let fail!: (error: Error) => void;
+    const delivered = new Promise<void>((resolve, reject) => {
+      complete = resolve;
+      fail = reject;
+    });
+    const timeout = setTimeout(
+      () => fail(new Error("CDC lost an event under a network profile")),
+      60_000,
+    );
+    await consumer.connect();
+    await consumer.subscribe({
+      topics: ["event-store.events.v1"],
+      replace: true,
+    });
+    await consumer.run({
+      eachMessage: async ({ message }) => {
+        const event = JSON.parse(message.value?.toString() ?? "{}") as {
+          context?: { requestId?: string };
+        };
+        const requestId = event.context?.requestId;
+        if (requestId !== undefined && expected.has(requestId)) {
+          received.add(requestId);
+          if (received.size === expected.size) complete();
+        }
+      },
+    });
+    const append = async (label: string, payload = "ok"): Promise<string> => {
+      const requestId = uuidv7();
+      expected.add(requestId);
+      await new PostgresEventStore(pool).append({
+        producerService: "orders-command",
+        namespace: "orders",
+        aggregateType: "Order",
+        aggregateId: uuidv7(),
+        requestId,
+        expectedRevision: { kind: "no_stream" },
+        context: {
+          requestId,
+          correlationId: uuidv7(),
+          causationId: null,
+          actor: { kind: "user", subjectRef: "usr_network" },
+        },
+        events: [
+          {
+            eventName: "order.created",
+            schemaVersion: 1,
+            occurredAt: "2026-08-04T10:12:18.120Z",
+            payload: { label, payload },
+          },
+        ],
+      });
+      return requestId;
+    };
+    const waitFor = async (requestId: string): Promise<void> => {
+      const deadline = Date.now() + 30_000;
+      while (!received.has(requestId)) {
+        if (Date.now() >= deadline)
+          throw new Error(
+            `CDC did not deliver ${requestId} under network fault`,
+          );
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    };
+    try {
+      for (const latency of [20, 50, 100]) {
+        const toxic = await stack.addPostgresConnectLatency(latency);
+        try {
+          await waitFor(await append(`latency-${latency}`));
+        } finally {
+          await toxic.remove();
+        }
+      }
+      const bandwidth = await stack.addPostgresConnectBandwidthLimit(1024);
+      try {
+        await waitFor(await append("bandwidth-1mib", "x".repeat(512 * 1024)));
+      } finally {
+        await bandwidth.remove();
+      }
+      if (received.size === expected.size) complete();
+      await delivered;
+      expect(received).toEqual(expected);
+    } finally {
+      clearTimeout(timeout);
+      await consumer.disconnect();
+    }
+  }, 90_000);
 });
