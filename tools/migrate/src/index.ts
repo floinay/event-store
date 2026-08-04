@@ -25,7 +25,11 @@ function rolePasswordsFromEnvironment(): ReadonlyMap<string, string> {
     throw new Error("EVENT_STORE_ROLE_PASSWORDS_JSON must be an object");
   const passwords = new Map<string, string>();
   for (const [role, password] of Object.entries(parsed)) {
-    if (!loginRoles.has(role) || typeof password !== "string" || password === "")
+    if (
+      !loginRoles.has(role) ||
+      typeof password !== "string" ||
+      password === ""
+    )
       throw new Error("invalid Event Store role password secret");
     passwords.set(role, password);
   }

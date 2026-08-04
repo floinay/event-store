@@ -130,7 +130,10 @@ suite("logical slot-loss recovery", () => {
         [recoveryId],
       ),
     ).resolves.toMatchObject({ rows: [{ count: barriers.length }] });
-    await observeBarrierTransport(stack, barriers.map((barrier) => barrier.eventId));
+    await observeBarrierTransport(
+      stack,
+      barriers.map((barrier) => barrier.eventId),
+    );
     await eventually(async () => {
       const failures = await pool.query<{ error_detail: { message: string } }>(
         `SELECT error_detail FROM projection_runtime.failures
@@ -172,11 +175,10 @@ suite("logical slot-loss recovery", () => {
         consumerGroupId,
       ],
     );
-    await pool.query("SELECT event_store.activate_recovery_cdc_slot($1,$2,$3)", [
-      recoverySlot,
-      recoveryConnector,
-      (8n * 1024n ** 3n).toString(),
-    ]);
+    await pool.query(
+      "SELECT event_store.activate_recovery_cdc_slot($1,$2,$3)",
+      [recoverySlot, recoveryConnector, (8n * 1024n ** 3n).toString()],
+    );
     await append(store, uuidv7(), "after-slot-recovery");
     await eventually(async () => {
       const missing = await pool.query<{ count: number }>(
@@ -260,7 +262,9 @@ async function observeBarrierTransport(
   stack: EventStoreStack,
   eventIds: readonly string[],
 ): Promise<void> {
-  const kafka = new KafkaJS.Kafka({ kafkaJS: { brokers: [stack.kafkaBroker()] } });
+  const kafka = new KafkaJS.Kafka({
+    kafkaJS: { brokers: [stack.kafkaBroker()] },
+  });
   const consumer = kafka.consumer({
     kafkaJS: {
       groupId: `slot-loss-transport-${uuidv7()}`,
@@ -272,11 +276,15 @@ async function observeBarrierTransport(
   const expected = new Set(eventIds);
   const observed = new Set<string>();
   await consumer.connect();
-  await consumer.subscribe({ topics: ["event-store.events.v1"], replace: true });
+  await consumer.subscribe({
+    topics: ["event-store.events.v1"],
+    replace: true,
+  });
   try {
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(
-        () => reject(new Error("recovery connector did not deliver all barriers")),
+        () =>
+          reject(new Error("recovery connector did not deliver all barriers")),
         60_000,
       );
       void consumer.run({

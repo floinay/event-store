@@ -129,8 +129,7 @@ export async function ensureCdcSlot(
     "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
   );
   const cdcSlotName = runtime.rows[0]?.cdc_slot_name ?? "event_store_live";
-  const cdcConnectorName =
-    runtime.rows[0]?.cdc_connector_name ?? connectorName;
+  const cdcConnectorName = runtime.rows[0]?.cdc_connector_name ?? connectorName;
   const adoptedRecovery =
     cdcSlotName !== "event_store_live" || cdcConnectorName !== connectorName;
   const slot = await database.query<{ exists: boolean }>(

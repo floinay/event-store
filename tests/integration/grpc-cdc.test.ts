@@ -197,7 +197,12 @@ suite("gRPC to CDC", () => {
       const delivered = new Promise<void>((resolve, reject) => {
         const seen = new Set<string>();
         const timeout = setTimeout(
-          () => reject(new Error("acknowledged events were not delivered after Connect restart")),
+          () =>
+            reject(
+              new Error(
+                "acknowledged events were not delivered after Connect restart",
+              ),
+            ),
           30_000,
         );
         void consumer.run({
@@ -249,32 +254,33 @@ suite("gRPC to CDC", () => {
         await direct.query("RESET ROLE").catch(() => undefined);
         direct.release();
       }
-      const response = await new Promise<Record<string, unknown>>((resolve, reject) =>
-        client.AppendToStream(
-          {
-            request_id: grpcRequestId,
-            namespace: "orders",
-            aggregate_type: "Order",
-            aggregate_id: uuidv7(),
-            expected_revision: { no_stream: {} },
-            context: {
-              correlation_id: uuidv7(),
-              actor_json: Buffer.from(
-                JSON.stringify({ kind: "user", subjectRef: "usr_1" }),
-              ),
-            },
-            events: [
-              {
-                event_name: "order.created",
-                schema_version: 1,
-                occurred_at: "2026-08-04T10:12:18.120Z",
-                payload_json: Buffer.from(JSON.stringify({ orderRef: "o2" })),
+      const response = await new Promise<Record<string, unknown>>(
+        (resolve, reject) =>
+          client.AppendToStream(
+            {
+              request_id: grpcRequestId,
+              namespace: "orders",
+              aggregate_type: "Order",
+              aggregate_id: uuidv7(),
+              expected_revision: { no_stream: {} },
+              context: {
+                correlation_id: uuidv7(),
+                actor_json: Buffer.from(
+                  JSON.stringify({ kind: "user", subjectRef: "usr_1" }),
+                ),
               },
-            ],
-          },
-          (error, value) =>
-            error === null ? resolve(value ?? {}) : reject(error),
-        ),
+              events: [
+                {
+                  event_name: "order.created",
+                  schema_version: 1,
+                  occurred_at: "2026-08-04T10:12:18.120Z",
+                  payload_json: Buffer.from(JSON.stringify({ orderRef: "o2" })),
+                },
+              ],
+            },
+            (error, value) =>
+              error === null ? resolve(value ?? {}) : reject(error),
+          ),
       );
       expect(response).toBeDefined();
       await stack.restartConnect();

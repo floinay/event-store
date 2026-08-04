@@ -165,7 +165,11 @@ function barrierAggregateId(replayId: string, partition: number): string {
   );
 }
 
-function stableBarrierId(replayId: string, partition: number, kind: string): string {
+function stableBarrierId(
+  replayId: string,
+  partition: number,
+  kind: string,
+): string {
   const bytes = createHash("sha256")
     .update(`${kind}:${replayId}:${partition}`)
     .digest()

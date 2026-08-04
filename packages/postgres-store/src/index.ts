@@ -141,7 +141,9 @@ export class PostgresEventStore {
     requestId: string,
   ): Promise<AppendResult> {
     return this.withSession(async (client) => {
-      const result = await client.query<{ append_recovery_barrier: AppendResult }>(
+      const result = await client.query<{
+        append_recovery_barrier: AppendResult;
+      }>(
         "SELECT event_store.append_recovery_barrier($1,$2,$3,$4) AS append_recovery_barrier",
         [replayId, partition, aggregateId, requestId],
       );

@@ -14,7 +14,8 @@ spec:
           env:
             - name: DATABASE_URL
               valueFrom:
-                secretKeyRef: { name: event-store-cluster-admin, key: database-url }
+                secretKeyRef:
+                  { name: event-store-cluster-admin, key: database-url }
             - name: MIGRATE_CLUSTER
               value: "true"
             - name: EVENT_STORE_ROLE_PASSWORDS_JSON

@@ -135,7 +135,11 @@ EOF
   }
 
   async start(
-    options: { cdc?: boolean; toxiproxy?: boolean; connectKafkaProxy?: boolean } = {},
+    options: {
+      cdc?: boolean;
+      toxiproxy?: boolean;
+      connectKafkaProxy?: boolean;
+    } = {},
   ): Promise<void> {
     this.#network = await new Network().start();
     this.#postgres = await new GenericContainer("postgres:18.4-bookworm")

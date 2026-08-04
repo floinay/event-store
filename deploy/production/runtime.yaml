@@ -36,10 +36,12 @@ spec:
                 secretKeyRef: { name: event-store-app, key: database-url }
             - name: CRITICAL_DATABASE_URL
               valueFrom:
-                secretKeyRef: { name: event-store-critical-app, key: database-url }
+                secretKeyRef:
+                  { name: event-store-critical-app, key: database-url }
             - name: CRITICAL_CLIENT_SUBJECTS
               valueFrom:
-                secretKeyRef: { name: event-store-critical-app, key: client-subjects }
+                secretKeyRef:
+                  { name: event-store-critical-app, key: client-subjects }
             - name: PRODUCER_SERVICE
               value: event-store-service
             - name: CONNECT_URL
@@ -92,18 +94,36 @@ spec:
           image: quay.io/debezium/connect:3.6.0.Final
           ports: [{ name: rest, containerPort: 8083 }]
           env:
-            - { name: BOOTSTRAP_SERVERS, value: event-store-kafka-kafka-bootstrap:9092 }
+            - {
+                name: BOOTSTRAP_SERVERS,
+                value: event-store-kafka-kafka-bootstrap:9092,
+              }
             - { name: GROUP_ID, value: event-store-connect }
-            - { name: CONFIG_STORAGE_TOPIC, value: _connect-event-store-configs }
-            - { name: OFFSET_STORAGE_TOPIC, value: _connect-event-store-offsets }
+            - {
+                name: CONFIG_STORAGE_TOPIC,
+                value: _connect-event-store-configs,
+              }
+            - {
+                name: OFFSET_STORAGE_TOPIC,
+                value: _connect-event-store-offsets,
+              }
             - { name: STATUS_STORAGE_TOPIC, value: _connect-event-store-status }
             - { name: CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR, value: "3" }
             - { name: CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR, value: "3" }
             - { name: CONNECT_STATUS_STORAGE_REPLICATION_FACTOR, value: "3" }
-            - { name: KEY_CONVERTER, value: org.apache.kafka.connect.storage.StringConverter }
-            - { name: VALUE_CONVERTER, value: org.apache.kafka.connect.json.JsonConverter }
+            - {
+                name: KEY_CONVERTER,
+                value: org.apache.kafka.connect.storage.StringConverter,
+              }
+            - {
+                name: VALUE_CONVERTER,
+                value: org.apache.kafka.connect.json.JsonConverter,
+              }
             - { name: VALUE_CONVERTER_SCHEMAS_ENABLE, value: "false" }
-            - { name: CONNECT_HEADER_CONVERTER, value: org.apache.kafka.connect.storage.SimpleHeaderConverter }
+            - {
+                name: CONNECT_HEADER_CONVERTER,
+                value: org.apache.kafka.connect.storage.SimpleHeaderConverter,
+              }
             - { name: EXACTLY_ONCE_SOURCE_SUPPORT, value: enabled }
             - { name: CONNECT_EXACTLY_ONCE_SOURCE_SUPPORT, value: enabled }
             - { name: CONNECT_TOPIC_CREATION_ENABLE, value: "false" }
@@ -111,10 +131,16 @@ spec:
             - { name: CONNECT_PRODUCER_ENABLE_IDEMPOTENCE, value: "true" }
             - { name: CONNECT_PRODUCER_LINGER_MS, value: "0" }
             - { name: CONNECT_PRODUCER_COMPRESSION_TYPE, value: lz4 }
-            - { name: CONNECT_PRODUCER_MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, value: "5" }
+            - {
+                name: CONNECT_PRODUCER_MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION,
+                value: "5",
+              }
             - { name: CONNECT_CONSUMER_ISOLATION_LEVEL, value: read_committed }
             - { name: CONNECT_CONFIG_PROVIDERS, value: file }
-            - { name: CONNECT_CONFIG_PROVIDERS_FILE_CLASS, value: org.apache.kafka.common.config.provider.FileConfigProvider }
+            - {
+                name: CONNECT_CONFIG_PROVIDERS_FILE_CLASS,
+                value: org.apache.kafka.common.config.provider.FileConfigProvider,
+              }
             - { name: JMXPORT, value: "9999" }
             - { name: JMXHOST, value: 127.0.0.1 }
             - name: CONNECT_REST_ADVERTISED_HOST_NAME

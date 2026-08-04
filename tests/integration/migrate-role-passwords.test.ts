@@ -34,7 +34,8 @@ suite("cluster role secret provisioning", () => {
         await client.end();
       }
     } finally {
-      if (previous === undefined) delete process.env.EVENT_STORE_ROLE_PASSWORDS_JSON;
+      if (previous === undefined)
+        delete process.env.EVENT_STORE_ROLE_PASSWORDS_JSON;
       else process.env.EVENT_STORE_ROLE_PASSWORDS_JSON = previous;
     }
   });

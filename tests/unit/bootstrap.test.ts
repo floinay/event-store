@@ -25,7 +25,9 @@ describe("CDC bootstrap slot safety", () => {
       [],
     ]);
 
-    await expect(ensureCdcSlot(database, "event-store-live")).resolves.toBeUndefined();
+    await expect(
+      ensureCdcSlot(database, "event-store-live"),
+    ).resolves.toBeUndefined();
     expect(database.query).toHaveBeenLastCalledWith(
       "SELECT pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
       ["event_store_live"],

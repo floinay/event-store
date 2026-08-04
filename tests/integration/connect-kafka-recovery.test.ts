@@ -33,11 +33,15 @@ suite("Connect to Kafka network recovery", () => {
       },
     });
     await consumer.connect();
-    await consumer.subscribe({ topics: ["event-store.events.v1"], replace: true });
+    await consumer.subscribe({
+      topics: ["event-store.events.v1"],
+      replace: true,
+    });
     const requestId = uuidv7();
     const delivered = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(
-        () => reject(new Error("event was lost after Connect-to-Kafka recovery")),
+        () =>
+          reject(new Error("event was lost after Connect-to-Kafka recovery")),
         30_000,
       );
       void consumer.run({

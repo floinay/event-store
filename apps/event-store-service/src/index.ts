@@ -1,7 +1,10 @@
 import { join } from "node:path";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 
-export function connectQueueRatio(metrics: string, connectorName: string): number {
+export function connectQueueRatio(
+  metrics: string,
+  connectorName: string,
+): number {
   const metric = (name: string): number => {
     const line = metrics
       .split("\n")
@@ -10,7 +13,8 @@ export function connectQueueRatio(metrics: string, connectorName: string): numbe
           (entry.startsWith(`${name}{`) || entry.startsWith(`${name} `)) &&
           entry.includes(`connector="${connectorName}"`),
       );
-    if (line.length !== 1) throw new Error(`missing or ambiguous Connect metric ${name}`);
+    if (line.length !== 1)
+      throw new Error(`missing or ambiguous Connect metric ${name}`);
     const value = Number(line[0]!.trim().split(/\s+/).at(-1));
     if (!Number.isFinite(value) || value < 0)
       throw new Error(`invalid Connect metric ${name}`);
@@ -49,7 +53,9 @@ export async function verifyKafkaReadiness(
     throw new Error("KAFKA_BROKERS must contain at least one broker");
   if (!Number.isInteger(minInSyncReplicas) || minInSyncReplicas < 1)
     throw new Error("KAFKA_LIVE_MIN_ISR must be a positive integer");
-  const admin = new KafkaJS.Kafka({ kafkaJS: { brokers: [...brokers] } }).admin();
+  const admin = new KafkaJS.Kafka({
+    kafkaJS: { brokers: [...brokers] },
+  }).admin();
   await admin.connect();
   try {
     const metadata = await admin.fetchTopicMetadata({ topics: [topicName] });
@@ -145,7 +151,10 @@ export function errorFrom(
   else if (sqlCode === "57014")
     [code, machineCode] = [grpc.status.DEADLINE_EXCEEDED, "deadline_exceeded"];
   else if (statusCode === grpc.status.PERMISSION_DENIED)
-    [code, machineCode] = [grpc.status.PERMISSION_DENIED, "critical_append_forbidden"];
+    [code, machineCode] = [
+      grpc.status.PERMISSION_DENIED,
+      "critical_append_forbidden",
+    ];
   else if (sqlCode === "23505")
     [code, machineCode] = [grpc.status.ALREADY_EXISTS, "idempotency_conflict"];
   else if (sqlCode === "XX001")
@@ -278,7 +287,9 @@ export async function startServer(): Promise<grpc.Server> {
     throw new Error("CDC_WAL_BUDGET_BYTES must be a positive integer");
   const store = new PostgresEventStore(pool, BigInt(walBudget));
   const criticalPool =
-    criticalUrl === undefined ? undefined : new Pool({ connectionString: criticalUrl });
+    criticalUrl === undefined
+      ? undefined
+      : new Pool({ connectionString: criticalUrl });
   const criticalStore =
     criticalPool === undefined
       ? undefined
@@ -357,7 +368,8 @@ export async function startServer(): Promise<grpc.Server> {
                 const metrics = await fetch(
                   `http://${workerHost}:${connectMetricsPort}/metrics`,
                 ).then((result) => {
-                  if (!result.ok) throw new Error("Connect metrics are unavailable");
+                  if (!result.ok)
+                    throw new Error("Connect metrics are unavailable");
                   return result.text();
                 });
                 if (connectQueueRatio(metrics, connectorName) < 0.2)
@@ -365,11 +377,7 @@ export async function startServer(): Promise<grpc.Server> {
               }
             }
             if (kafkaBrokers !== undefined)
-              await verifyKafkaReadiness(
-                kafkaBrokers,
-                kafkaTopic,
-                kafkaMinIsr,
-              );
+              await verifyKafkaReadiness(kafkaBrokers, kafkaTopic, kafkaMinIsr);
             response.writeHead(200).end("ready\n");
           })().catch(() => response.writeHead(503).end("not ready\n"));
         });
@@ -413,8 +421,7 @@ export async function startServer(): Promise<grpc.Server> {
           call.getAuthContext().sslPeerCertificate?.subject?.CN,
           trustedCriticalSubjects,
         );
-        const appendStore =
-          trafficClass === "critical" ? criticalStore : store;
+        const appendStore = trafficClass === "critical" ? criticalStore : store;
         if (appendStore === undefined)
           throw Object.assign(
             new Error("critical append database principal is not configured"),
