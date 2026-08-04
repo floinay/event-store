@@ -245,4 +245,105 @@ suite("Debezium CDC", () => {
       await consumer.disconnect();
     }
   }, 90_000);
+
+  it("never publishes an uncommitted or rolled-back append", async () => {
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [stack.kafkaBroker()] },
+    });
+    const consumer = kafka.consumer({
+      kafkaJS: {
+        groupId: `cdc-transaction-${uuidv7()}`,
+        autoCommit: false,
+        fromBeginning: true,
+        readUncommitted: false,
+      },
+    });
+    const seen = new Set<string>();
+    const waiters = new Map<string, () => void>();
+    await consumer.connect();
+    await consumer.subscribe({
+      topics: ["event-store.events.v1"],
+      replace: true,
+    });
+    await consumer.run({
+      eachMessage: async ({ message }) => {
+        const header = message.headers?.id;
+        const eventId = Array.isArray(header)
+          ? header[0]?.toString()
+          : header?.toString();
+        if (eventId === undefined) return;
+        seen.add(eventId);
+        waiters.get(eventId)?.();
+      },
+    });
+    const waitFor = (eventId: string): Promise<void> => {
+      if (seen.has(eventId)) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(
+          () =>
+            reject(new Error(`CDC did not publish committed event ${eventId}`)),
+          30_000,
+        );
+        waiters.set(eventId, () => {
+          clearTimeout(timeout);
+          waiters.delete(eventId);
+          resolve();
+        });
+      });
+    };
+    const appendInTransaction = async (commit: boolean): Promise<string> => {
+      const client = await pool.connect();
+      const requestId = uuidv7();
+      try {
+        await client.query("BEGIN");
+        const result = await client.query<{
+          append_v1: { events: { eventId: string }[] };
+        }>(
+          "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+          [
+            "orders-command",
+            "orders",
+            "Order",
+            uuidv7(),
+            requestId,
+            "no_stream",
+            null,
+            JSON.stringify([
+              {
+                eventName: "order.created",
+                schemaVersion: 1,
+                occurredAt: "2026-08-04T10:12:18.120Z",
+                payload: { orderRef: requestId },
+              },
+            ]),
+            JSON.stringify({
+              correlationId: uuidv7(),
+              causationId: null,
+              actor: { kind: "user", subjectRef: "usr_transaction" },
+            }),
+          ],
+        );
+        const eventId = result.rows[0]?.append_v1.events[0]?.eventId;
+        if (eventId === undefined) throw new Error("append returned no event");
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        expect(seen.has(eventId)).toBe(false);
+        await client.query(commit ? "COMMIT" : "ROLLBACK");
+        return eventId;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+    try {
+      const committedEventId = await appendInTransaction(true);
+      await waitFor(committedEventId);
+      const rolledBackEventId = await appendInTransaction(false);
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      expect(seen.has(rolledBackEventId)).toBe(false);
+    } finally {
+      await consumer.disconnect();
+    }
+  }, 90_000);
 });
