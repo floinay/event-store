@@ -21,6 +21,10 @@ jobs:
           RUN_INTEGRATION=true npx vitest run --no-file-parallelism
           tests/integration/slot-loss-recovery.test.ts
           tests/integration/pitr-recovery.test.ts
+          tests/integration/postgres-ha-promotion.test.ts
+          tests/integration/projection-transaction.test.ts
+          tests/integration/projection-recovery.test.ts
+          tests/integration/grpc-cdc.test.ts
           tests/integration/connect-network-recovery.test.ts
           tests/integration/connect-kafka-recovery.test.ts
           --reporter=json --outputFile=reliability-nightly.json
