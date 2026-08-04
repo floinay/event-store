@@ -25,6 +25,35 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function withHeartbeats<T>(
+  work: () => Promise<T>,
+  heartbeat: () => Promise<void>,
+): Promise<T> {
+  let finished = false;
+  let heartbeatError: unknown;
+  const pulse = (async () => {
+    while (!finished) {
+      await wait(1_000);
+      if (!finished) {
+        try {
+          await heartbeat();
+        } catch (error) {
+          heartbeatError = error;
+          return;
+        }
+      }
+    }
+  })();
+  try {
+    const result = await work();
+    if (heartbeatError !== undefined) throw heartbeatError;
+    return result;
+  } finally {
+    finished = true;
+    await pulse;
+  }
+}
+
 /** KafkaJS-compatible adapter with manual, post-transaction offset commits. */
 export class KafkaProjectionRunner {
   constructor(
@@ -115,7 +144,7 @@ export class KafkaProjectionRunner {
       await Promise.all(assignments.map((assignment) => alignPartition(assignment)));
     };
     await consumer.run({
-      eachMessage: async ({ topic, partition, message, pause }) => {
+      eachMessage: async ({ topic, partition, message, pause, heartbeat }) => {
         await assigned;
         if (message.key === null || message.value === null) {
           pause();
@@ -171,12 +200,16 @@ export class KafkaProjectionRunner {
           try {
             // read_committed consumers do not receive Kafka transaction-control
             // batches, so readable record offsets are not necessarily adjacent.
-            await this.transactionRunner.process(record, this.apply, {
-              allowReadCommittedOffsetGap: true,
-            });
+            await withHeartbeats(
+              () =>
+                this.transactionRunner.process(record, this.apply, {
+                  allowReadCommittedOffsetGap: true,
+                }),
+              heartbeat,
+            );
           } catch (error) {
             failure = error;
-            await new Promise((resolve) => setTimeout(resolve, delay));
+            await withHeartbeats(() => wait(delay), heartbeat);
             continue;
           }
           for (const commitDelay of projectionRetryDelaysMs) {
@@ -195,7 +228,7 @@ export class KafkaProjectionRunner {
               return;
             } catch (commitError) {
               failure = commitError;
-              await new Promise((resolve) => setTimeout(resolve, commitDelay));
+              await withHeartbeats(() => wait(commitDelay), heartbeat);
             }
           }
           // The DB checkpoint is durable. Retrying this record as a duplicate is
