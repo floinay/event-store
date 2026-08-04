@@ -91,7 +91,7 @@ import {
 
 const cdcLatencyBucketsSeconds = [0.01, 0.025, 0.05, 0.1, 0.2] as const;
 
-/** Prometheus histogram from PostgreSQL `recorded_at` to consumer receipt. */
+/** Prometheus histogram from SQL completion to consumer receipt. */
 export class CommitToConsumerLatencyHistogram {
   private count = 0;
   private sumSeconds = 0;

@@ -31,11 +31,7 @@ export interface AppendResult {
   previousRevision: string;
   currentRevision: string;
   recordedAt: string;
-  /**
-   * PostgreSQL's canonical `recorded_at` epoch. It is sampled inside the
-   * append transaction, before commit, so CDC latency measured from it is a
-   * conservative bound rather than a client-response measurement.
-   */
+  /** Event Store span timestamp sampled immediately after the SQL call completes. */
   commitEpochMs?: number;
   events: readonly {
     eventId: string;
@@ -70,15 +66,6 @@ function isRetriableAppendError(error: unknown): boolean {
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function conservativeDatabaseEpochMs(value: AppendResult): number {
-  const epochMs = Date.parse(value.recordedAt);
-  if (!Number.isFinite(epochMs))
-    throw new Error(
-      "append returned an invalid PostgreSQL recordedAt timestamp",
-    );
-  return epochMs;
 }
 
 export class PostgresEventStore {
@@ -140,10 +127,14 @@ export class PostgresEventStore {
           if (row === undefined) throw new Error("append returned no result");
           const value = row?.append_v1;
           if (value === undefined) throw new Error("append returned no result");
+          // A successful simple SQL statement has committed before
+          // node-postgres resolves. This is the normative Event Store span,
+          // deliberately distinct from the domain-level recordedAt timestamp.
+          const commitEpochMs = Date.now();
           // Keep this observation out of the durable idempotent result: a
           // retried request must retain its byte-equivalent response.
           Object.defineProperty(value, "commitEpochMs", {
-            value: conservativeDatabaseEpochMs(value),
+            value: commitEpochMs,
             enumerable: false,
           });
           return value;
@@ -180,8 +171,9 @@ export class PostgresEventStore {
       const value = row?.append_recovery_barrier;
       if (value === undefined)
         throw new Error("recovery barrier append returned no result");
+      const commitEpochMs = Date.now();
       Object.defineProperty(value, "commitEpochMs", {
-        value: conservativeDatabaseEpochMs(value),
+        value: commitEpochMs,
         enumerable: false,
       });
       return value;

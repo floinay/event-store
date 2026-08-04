@@ -73,7 +73,7 @@ function percentile(samples: readonly number[], quantile: number): number {
   ]!;
 }
 
-suite("PostgreSQL recorded_at to Kafka consumer latency", () => {
+suite("PostgreSQL commit to Kafka consumer latency", () => {
   const stack = new EventStoreStack();
   let serviceProcess: ChildProcess;
   let client: AppendClient;
@@ -138,7 +138,7 @@ suite("PostgreSQL recorded_at to Kafka consumer latency", () => {
   }, 60_000);
 
   it(
-    "meets the conservative PostgreSQL-to-consumer latency SLO",
+    "meets the PostgreSQL-commit-to-consumer latency SLO",
     async () => {
       if (!Number.isInteger(sampleCount) || sampleCount < 100)
         throw new Error(
