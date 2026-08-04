@@ -4,6 +4,7 @@ import {
   type CreatedProxy,
 } from "@testcontainers/toxiproxy";
 import { Pool } from "pg";
+import { randomUUID } from "node:crypto";
 import { migrate } from "@event-store/migrate";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 
@@ -14,6 +15,89 @@ export class EventStoreStack {
   #connect?: Awaited<ReturnType<GenericContainer["start"]>>;
   #toxiproxy?: Awaited<ReturnType<ToxiProxyContainer["start"]>>;
   #postgresConnectProxy?: CreatedProxy;
+
+  async createPitrBaseBackup(): Promise<{
+    basePath: string;
+    archivePath: string;
+  }> {
+    if (this.#postgres === undefined) throw new Error("stack is not started");
+    const basePath = `/tmp/pitr-base-${randomUUID()}`;
+    const backup = await this.#postgres.exec([
+      "bash",
+      "-ceu",
+      `PGPASSWORD=postgres pg_basebackup -h 127.0.0.1 -U postgres -D ${basePath} -X stream -Fp`,
+    ]);
+    if (backup.exitCode !== 0)
+      throw new Error(`pg_basebackup failed: ${backup.stderr}`);
+    return { basePath, archivePath: "/var/lib/postgresql/archive" };
+  }
+
+  async restorePitr(
+    backup: { basePath: string; archivePath: string },
+    targetTime: string,
+  ): Promise<{ databaseUrl: string; stop: () => Promise<void> }> {
+    if (this.#postgres === undefined || this.#network === undefined)
+      throw new Error("stack is not started");
+    const flush = await this.#postgres.exec([
+      "bash",
+      "-ceu",
+      "psql -U postgres -d event_store -c 'CHECKPOINT; SELECT pg_switch_wal(); CHECKPOINT; SELECT pg_switch_wal()'",
+    ]);
+    if (flush.exitCode !== 0)
+      throw new Error(`could not archive WAL for PITR: ${flush.stderr}`);
+    const restored = await new GenericContainer("postgres:18.4-bookworm")
+      .withEntrypoint(["bash"])
+      .withCommand(["-ceu", "while true; do sleep 1; done"])
+      .withNetwork(this.#network)
+      .withExposedPorts(5432)
+      .withWaitStrategy(Wait.forSuccessfulCommand("true"))
+      .start();
+    try {
+      const createRestoreDirectory = await restored.exec(["mkdir", "-p", "/restore"]);
+      if (createRestoreDirectory.exitCode !== 0)
+        throw new Error(`could not prepare PITR directory: ${createRestoreDirectory.stderr}`);
+      await restored.copyArchiveToContainer(
+        await this.#postgres.copyArchiveFromContainer(backup.basePath),
+        "/restore",
+      );
+      await restored.copyArchiveToContainer(
+        await this.#postgres.copyArchiveFromContainer(backup.archivePath),
+        "/restore",
+      );
+      const configure = await restored.exec([
+        "bash",
+        "-ceu",
+        `mv /restore/${backup.basePath.split("/").at(-1)} /restore/data
+         cat >> /restore/data/postgresql.auto.conf <<'EOF'
+restore_command = 'cp /restore/archive/%f %p'
+recovery_target_time = '${targetTime.replaceAll("'", "''")}'
+recovery_target_action = 'promote'
+EOF
+         touch /restore/data/recovery.signal
+         chown -R postgres:postgres /restore
+         gosu postgres postgres -D /restore/data -c listen_addresses='*' > /tmp/restored-postgres.log 2>&1 &`,
+      ]);
+      if (configure.exitCode !== 0)
+        throw new Error(`could not configure restored PostgreSQL: ${configure.stderr}`);
+      const databaseUrl = `postgresql://postgres:postgres@${restored.getHost()}:${restored.getMappedPort(5432)}/event_store`;
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        const pool = new Pool({ connectionString: databaseUrl });
+        try {
+          await pool.query("SELECT pg_is_in_recovery()");
+          await pool.end();
+          return { databaseUrl, stop: () => restored.stop().then(() => undefined) };
+        } catch {
+          await pool.end().catch(() => undefined);
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
+      throw new Error("restored PostgreSQL did not become ready within 60s");
+    } catch (error) {
+      await restored.stop().catch(() => undefined);
+      throw error;
+    }
+  }
 
 
   get databaseUrl(): string {
