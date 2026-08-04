@@ -245,6 +245,7 @@ suite("projection consumer Kafka crash recovery", () => {
         brokers: [stack.kafkaBroker()],
         groupId: `consumer-rebalance-${generationId}`,
         topic,
+        partitionAssignors: [KafkaJS.PartitionAssignors.range],
       },
       new ProjectionTransactionRunner(pool, identity, (event) => event),
       async (_client, _event, signal) => {
@@ -268,6 +269,7 @@ suite("projection consumer Kafka crash recovery", () => {
         brokers: [stack.kafkaBroker()],
         groupId: `consumer-rebalance-${generationId}`,
         topic,
+        partitionAssignors: [KafkaJS.PartitionAssignors.range],
       },
       new ProjectionTransactionRunner(pool, identity, (event) => event),
       async (client, event) => {
@@ -334,21 +336,36 @@ suite("projection consumer Kafka crash recovery", () => {
       await handlerEntered;
       const replacementStart = replacementRunner.start();
       const started = Date.now();
-      await blockedConsumer.disconnect();
-      blockedConsumer = undefined;
+      // A second member causes an actual eager group rebalance. The original
+      // process remains connected: its open DB transaction must be cancelled
+      // by the 10-second transaction deadline, then the replacement owns p0.
       await expect(
         Promise.race([
           handlerAborted,
           new Promise<void>((_, reject) =>
             setTimeout(
               () => reject(new Error("rebalance did not abort transaction")),
-              10_000,
+              12_000,
             ),
           ),
         ]),
       ).resolves.toBeUndefined();
-      expect(Date.now() - started).toBeLessThanOrEqual(10_000);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(9_500);
+      expect(Date.now() - started).toBeLessThanOrEqual(12_000);
       replacementConsumer = await replacementStart;
+      await eventually(
+        async () =>
+          replacementConsumer
+            ?.assignment()
+            .some(
+              (assignment) =>
+                assignment.topic === topic && assignment.partition === 0,
+            ) ?? false,
+      );
+      expect(blockedConsumer.assignment()).not.toContainEqual({
+        topic,
+        partition: 0,
+      });
       await eventually(async () => {
         const result = await pool.query<{ count: number }>(
           "SELECT count(*)::int AS count FROM consumer_kafka_crash.events WHERE projection_name=$1",

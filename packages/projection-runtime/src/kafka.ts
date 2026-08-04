@@ -6,12 +6,19 @@ import type {
   ProjectionHandler,
   ProjectionTransactionRunner,
 } from "./index.js";
-import { ProjectionCrashError, projectionRetryDelaysMs } from "./index.js";
+import {
+  ProjectionCrashError,
+  ProjectionHandlerTimeoutError,
+  ProjectionRebalanceError,
+  projectionRetryDelaysMs,
+} from "./index.js";
 
 export interface KafkaProjectionConfig {
   brokers: string[];
   groupId: string;
   topic: string;
+  /** Override only when a deployment needs a compatible group assignor. */
+  partitionAssignors?: KafkaJS.PartitionAssignors[];
 }
 
 function rawEnvelope(value: Buffer | null): unknown {
@@ -89,7 +96,9 @@ export class KafkaProjectionRunner {
         maxWaitTimeInMs: 20,
         sessionTimeout: 30_000,
         heartbeatInterval: 3_000,
-        partitionAssignors: [KafkaJS.PartitionAssignors.cooperativeSticky],
+        partitionAssignors: this.config.partitionAssignors ?? [
+          KafkaJS.PartitionAssignors.cooperativeSticky,
+        ],
       },
     });
     const producer = kafka.producer({
@@ -259,7 +268,15 @@ export class KafkaProjectionRunner {
                 heartbeat,
               ).finally(() => clearInterval(assignmentWatcher));
             } catch (error) {
-              if (error instanceof ProjectionCrashError) throw error;
+              // A revoked assignment or a transaction timeout must return to
+              // Kafka immediately. Retrying inside the current eachBatch
+              // would retain a stale assignment and postpone rebalance.
+              if (
+                error instanceof ProjectionCrashError ||
+                error instanceof ProjectionHandlerTimeoutError ||
+                error instanceof ProjectionRebalanceError
+              )
+                throw error;
               failure = error;
               await withHeartbeats(() => wait(delay), heartbeat);
               continue;
