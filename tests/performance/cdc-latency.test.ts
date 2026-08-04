@@ -14,6 +14,7 @@ const sampleCount = Number(process.env.LATENCY_SAMPLE_COUNT ?? 100);
 const concurrency = Number(process.env.LATENCY_CONCURRENCY ?? 1);
 const durationMs = Number(process.env.LATENCY_DURATION_MS ?? 0);
 const maxClockSkewMs = Number(process.env.MAX_CLOCK_SKEW_MS ?? 2);
+const latencyTestTimeoutMs = Math.max(180_000, durationMs + 60_000);
 
 interface AppendClient extends grpc.Client {
   AppendToStream(
@@ -82,127 +83,131 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     await stack.stop();
   }, 60_000);
 
-  it("meets the PostgreSQL-commit-to-consumer latency SLO", async () => {
-    if (!Number.isInteger(sampleCount) || sampleCount < 100)
-      throw new Error(
-        "LATENCY_SAMPLE_COUNT must be an integer of at least 100",
-      );
-    if (!Number.isInteger(concurrency) || concurrency < 1)
-      throw new Error("LATENCY_CONCURRENCY must be a positive integer");
-    if (!Number.isFinite(durationMs) || durationMs < 0)
-      throw new Error("LATENCY_DURATION_MS must be a non-negative number");
-    if (!Number.isFinite(maxClockSkewMs) || maxClockSkewMs < 0)
-      throw new Error("MAX_CLOCK_SKEW_MS must be a non-negative number");
-    if (process.env.RUN_RELEASE_LATENCY === "true" && durationMs < 1_800_000)
-      throw new Error("release latency profile requires at least 30 minutes");
-    const committed = new Map<string, number>();
-    const observed = new Map<string, number>();
-    const kafka = new KafkaJS.Kafka({
-      kafkaJS: { brokers: [stack.kafkaBroker()] },
-    });
-    const consumer = kafka.consumer({
-      kafkaJS: {
-        groupId: `latency-${uuidv7()}`,
-        autoCommit: false,
-        fromBeginning: true,
-        readUncommitted: false,
-      },
-    });
-    await consumer.connect();
-    await consumer.subscribe({
-      topics: ["event-store.events.v1"],
-      replace: true,
-    });
-    const clockProbeStarted = Date.now();
-    const databaseClock = await pool.query<{ epoch_ms: string }>(
-      "SELECT (extract(epoch FROM clock_timestamp()) * 1000)::text AS epoch_ms",
-    );
-    const clockProbeFinished = Date.now();
-    const databaseEpochMs = Number(databaseClock.rows[0]?.epoch_ms);
-    if (!Number.isFinite(databaseEpochMs))
-      throw new Error("PostgreSQL did not return a measurable wall clock");
-    const consumerClockAtProbe = (clockProbeStarted + clockProbeFinished) / 2;
-    expect(
-      Math.abs(consumerClockAtProbe - databaseEpochMs),
-    ).toBeLessThanOrEqual(
-      maxClockSkewMs + (clockProbeFinished - clockProbeStarted) / 2,
-    );
-    let warmupEventId: string | undefined;
-    let appendsFinished = false;
-    let warmupObserved!: () => void;
-    const warmup = new Promise<void>((resolve) => {
-      warmupObserved = resolve;
-    });
-    let received!: () => void;
-    const samplesReceived = new Promise<void>((resolve, reject) => {
-      received = resolve;
-      const deadline = setTimeout(
-        () => reject(new Error("timed out waiting for latency samples")),
-        Math.max(30_000, durationMs + 30_000),
-      );
-      void consumer.run({
-        eachMessage: async ({ message }) => {
-          // Take this span before JSON parsing, schema validation or a handler.
-          const receivedAt = Date.now();
-          const eventId = headerText(message.headers?.id);
-          if (eventId === undefined) return;
-          observed.set(eventId, receivedAt);
-          if (eventId === warmupEventId) warmupObserved();
-          if (appendsFinished && allSamplesReceived(committed, observed)) {
-            clearTimeout(deadline);
-            received();
-          }
+  it(
+    "meets the PostgreSQL-commit-to-consumer latency SLO",
+    async () => {
+      if (!Number.isInteger(sampleCount) || sampleCount < 100)
+        throw new Error(
+          "LATENCY_SAMPLE_COUNT must be an integer of at least 100",
+        );
+      if (!Number.isInteger(concurrency) || concurrency < 1)
+        throw new Error("LATENCY_CONCURRENCY must be a positive integer");
+      if (!Number.isFinite(durationMs) || durationMs < 0)
+        throw new Error("LATENCY_DURATION_MS must be a non-negative number");
+      if (!Number.isFinite(maxClockSkewMs) || maxClockSkewMs < 0)
+        throw new Error("MAX_CLOCK_SKEW_MS must be a non-negative number");
+      if (process.env.RUN_RELEASE_LATENCY === "true" && durationMs < 1_800_000)
+        throw new Error("release latency profile requires at least 30 minutes");
+      const committed = new Map<string, number>();
+      const observed = new Map<string, number>();
+      const kafka = new KafkaJS.Kafka({
+        kafkaJS: { brokers: [stack.kafkaBroker()] },
+      });
+      const consumer = kafka.consumer({
+        kafkaJS: {
+          groupId: `latency-${uuidv7()}`,
+          autoCommit: false,
+          fromBeginning: true,
+          readUncommitted: false,
         },
       });
-    });
-    warmupEventId = (await append(client, uuidv7(), uuidv7(), "warmup"))
-      .eventId;
-    if (observed.has(warmupEventId)) warmupObserved();
-    await warmup;
-    const deadline = performance.now() + durationMs;
-    let index = 0;
-    do {
-      await Promise.all(
-        Array.from({ length: concurrency }, async () => {
-          const requestId = uuidv7();
-          const aggregateId = uuidv7();
-          const appendResult = await append(
-            client,
-            requestId,
-            aggregateId,
-            String(index++),
-          );
-          committed.set(appendResult.eventId, appendResult.commitEpochMs);
-        }),
+      await consumer.connect();
+      await consumer.subscribe({
+        topics: ["event-store.events.v1"],
+        replace: true,
+      });
+      const clockProbeStarted = Date.now();
+      const databaseClock = await pool.query<{ epoch_ms: string }>(
+        "SELECT (extract(epoch FROM clock_timestamp()) * 1000)::text AS epoch_ms",
       );
-    } while (committed.size < sampleCount || performance.now() < deadline);
-    appendsFinished = true;
-    if (allSamplesReceived(committed, observed)) received();
-    await samplesReceived;
-    await consumer.disconnect();
-    const samples = [...committed]
-      .map(([eventId, committedAt]) => observed.get(eventId)! - committedAt)
-      .sort((left, right) => left - right);
-    const metrics = {
-      samples: samples.length,
-      p50: percentile(samples, 0.5),
-      p95: percentile(samples, 0.95),
-      p99: percentile(samples, 0.99),
-      p999: percentile(samples, 0.999),
-      mean:
-        samples.reduce((total, sample) => total + sample, 0) / samples.length,
-    };
-    console.info(`CDC latency metrics: ${JSON.stringify(metrics)}`);
-    expect(metrics.samples).toBeGreaterThanOrEqual(sampleCount);
-    expect(samples.every((sample) => sample >= 0)).toBe(true);
-    expect(samples.every((sample) => sample <= 50)).toBe(true);
-    expect(metrics.p50).toBeLessThanOrEqual(50);
-    expect(metrics.p95).toBeLessThanOrEqual(50);
-    expect(metrics.p99).toBeLessThanOrEqual(50);
-    expect(metrics.p999).toBeLessThanOrEqual(50);
-    expect(metrics.p99).toBeGreaterThanOrEqual(metrics.p95);
-    expect(metrics.p999).toBeGreaterThanOrEqual(metrics.p99);
-  }, 180_000);
+      const clockProbeFinished = Date.now();
+      const databaseEpochMs = Number(databaseClock.rows[0]?.epoch_ms);
+      if (!Number.isFinite(databaseEpochMs))
+        throw new Error("PostgreSQL did not return a measurable wall clock");
+      const consumerClockAtProbe = (clockProbeStarted + clockProbeFinished) / 2;
+      expect(
+        Math.abs(consumerClockAtProbe - databaseEpochMs),
+      ).toBeLessThanOrEqual(
+        maxClockSkewMs + (clockProbeFinished - clockProbeStarted) / 2,
+      );
+      let warmupEventId: string | undefined;
+      let appendsFinished = false;
+      let warmupObserved!: () => void;
+      const warmup = new Promise<void>((resolve) => {
+        warmupObserved = resolve;
+      });
+      let received!: () => void;
+      const samplesReceived = new Promise<void>((resolve, reject) => {
+        received = resolve;
+        const deadline = setTimeout(
+          () => reject(new Error("timed out waiting for latency samples")),
+          Math.max(30_000, durationMs + 30_000),
+        );
+        void consumer.run({
+          eachMessage: async ({ message }) => {
+            // Take this span before JSON parsing, schema validation or a handler.
+            const receivedAt = Date.now();
+            const eventId = headerText(message.headers?.id);
+            if (eventId === undefined) return;
+            observed.set(eventId, receivedAt);
+            if (eventId === warmupEventId) warmupObserved();
+            if (appendsFinished && allSamplesReceived(committed, observed)) {
+              clearTimeout(deadline);
+              received();
+            }
+          },
+        });
+      });
+      warmupEventId = (await append(client, uuidv7(), uuidv7(), "warmup"))
+        .eventId;
+      if (observed.has(warmupEventId)) warmupObserved();
+      await warmup;
+      const deadline = performance.now() + durationMs;
+      let index = 0;
+      do {
+        await Promise.all(
+          Array.from({ length: concurrency }, async () => {
+            const requestId = uuidv7();
+            const aggregateId = uuidv7();
+            const appendResult = await append(
+              client,
+              requestId,
+              aggregateId,
+              String(index++),
+            );
+            committed.set(appendResult.eventId, appendResult.commitEpochMs);
+          }),
+        );
+      } while (committed.size < sampleCount || performance.now() < deadline);
+      appendsFinished = true;
+      if (allSamplesReceived(committed, observed)) received();
+      await samplesReceived;
+      await consumer.disconnect();
+      const samples = [...committed]
+        .map(([eventId, committedAt]) => observed.get(eventId)! - committedAt)
+        .sort((left, right) => left - right);
+      const metrics = {
+        samples: samples.length,
+        p50: percentile(samples, 0.5),
+        p95: percentile(samples, 0.95),
+        p99: percentile(samples, 0.99),
+        p999: percentile(samples, 0.999),
+        mean:
+          samples.reduce((total, sample) => total + sample, 0) / samples.length,
+      };
+      console.info(`CDC latency metrics: ${JSON.stringify(metrics)}`);
+      expect(metrics.samples).toBeGreaterThanOrEqual(sampleCount);
+      expect(samples.every((sample) => sample >= 0)).toBe(true);
+      expect(samples.every((sample) => sample <= 50)).toBe(true);
+      expect(metrics.p50).toBeLessThanOrEqual(50);
+      expect(metrics.p95).toBeLessThanOrEqual(50);
+      expect(metrics.p99).toBeLessThanOrEqual(50);
+      expect(metrics.p999).toBeLessThanOrEqual(50);
+      expect(metrics.p99).toBeGreaterThanOrEqual(metrics.p95);
+      expect(metrics.p999).toBeGreaterThanOrEqual(metrics.p99);
+    },
+    latencyTestTimeoutMs,
+  );
 });
 
 function allSamplesReceived(
