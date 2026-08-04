@@ -210,6 +210,15 @@ suite("gRPC to CDC", () => {
     } finally {
       await stack.setConnectKafkaEnabled(true);
       await new Promise<void>((resolve) => probeServer.tryShutdown(resolve));
+      const recoveryDeadline = Date.now() + 30_000;
+      while (Date.now() < recoveryDeadline) {
+        const readiness = await fetch("http://127.0.0.1:50161/readyz");
+        if (readiness.status === 200) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      await expect(fetch("http://127.0.0.1:50161/readyz")).resolves.toMatchObject({
+        status: 200,
+      });
       for (const [name, value] of Object.entries(previous)) {
         const key =
           name === "grpc"
