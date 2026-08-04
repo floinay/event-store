@@ -11,7 +11,13 @@ export interface ReplayIdentity {
 }
 
 export interface ReplayVerification {
-  /** The replay projection consumer group whose offsets must be caught up. */
+  /**
+   * Readable-record lag measured by the projection runtime itself. This must
+   * account for Kafka transaction-control records, which Admin high watermarks
+   * cannot safely use as consumer lag.
+   */
+  kafkaLag: () => Promise<bigint>;
+  /** The replay projection consumer group that committed every barrier. */
   consumerGroupId: string;
   /** Projection-specific deterministic full-fold and rebuilt-model checksums. */
   checksums: () => Promise<{ expected: string; actual: string }>;
@@ -21,6 +27,14 @@ export interface ReplayBarrier {
   partition: number;
   aggregateId: string;
   eventId: string;
+}
+
+/** A replay barrier as received by the projection's Kafka consumer. */
+export interface ConsumedReplayRecord {
+  topic: string;
+  partition: number;
+  offset: string | bigint;
+  value: Buffer | string;
 }
 
 export interface ReplayStartOptions {
@@ -245,11 +259,24 @@ export class ReplayCoordinator {
 
   async recordBarrier(
     identity: ReplayIdentity,
-    partition: number,
-    eventId: string,
+    record: ConsumedReplayRecord,
   ): Promise<void> {
+    const partition = record.partition;
     if (!Number.isInteger(partition) || partition < 0 || partition >= 24)
       throw new RangeError("replay barrier partition must be 0..23");
+    if (record.topic !== replayTopicName(identity.replayId))
+      throw new Error("replay barrier came from the wrong Kafka topic");
+    let offset: bigint;
+    let envelope: { eventId?: unknown };
+    try {
+      offset = BigInt(record.offset);
+      envelope = JSON.parse(record.value.toString()) as { eventId?: unknown };
+    } catch {
+      throw new Error("replay barrier is not a valid Kafka event record");
+    }
+    if (offset < 0n || typeof envelope.eventId !== "string")
+      throw new Error("replay barrier is not a valid Kafka event record");
+    const eventId = envelope.eventId;
     const event = await this.pool.query<{
       partition_key: string;
       event_envelope: { eventName?: string; payload?: unknown };
@@ -270,9 +297,16 @@ export class ReplayCoordinator {
     )
       throw new Error("replay barrier does not match its canonical event");
     await this.pool.query(
-      `INSERT INTO projection_runtime.replay_barriers(projection_name,generation_id,partition_no,event_id,processed_at)
-       VALUES ($1,$2,$3,$4,clock_timestamp()) ON CONFLICT DO NOTHING`,
-      [identity.projectionName, identity.generationId, partition, eventId],
+      `INSERT INTO projection_runtime.replay_barriers(projection_name,generation_id,partition_no,event_id,topic_name,kafka_offset,processed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,clock_timestamp()) ON CONFLICT DO NOTHING`,
+      [
+        identity.projectionName,
+        identity.generationId,
+        partition,
+        eventId,
+        record.topic,
+        offset.toString(),
+      ],
     );
   }
 
@@ -281,7 +315,7 @@ export class ReplayCoordinator {
     verification: ReplayVerification,
   ): Promise<void> {
     const [kafkaLag, checksums] = await Promise.all([
-      this.replayKafkaLag(identity, verification.consumerGroupId),
+      verification.kafkaLag(),
       verification.checksums(),
     ]);
     if (kafkaLag !== 0n) throw new Error(`replay Kafka lag is ${kafkaLag}`);
@@ -290,13 +324,32 @@ export class ReplayCoordinator {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const barriers = await client.query<{ count: number }>(
+      const barriers = await client.query<{
+        count: number;
+        topic_name: string | null;
+        partition_no: number;
+        kafka_offset: string | null;
+      }>(
         `SELECT count(*)::int AS count FROM projection_runtime.replay_barriers
          WHERE projection_name=$1 AND generation_id=$2`,
         [identity.projectionName, identity.generationId],
       );
       if (barriers.rows[0]?.count !== 24)
         throw new Error("all 24 replay barriers must be processed");
+      const barrierOffsets = await client.query<{
+        topic_name: string | null;
+        partition_no: number;
+        kafka_offset: string | null;
+      }>(
+        `SELECT topic_name,partition_no,kafka_offset FROM projection_runtime.replay_barriers
+         WHERE projection_name=$1 AND generation_id=$2 ORDER BY partition_no`,
+        [identity.projectionName, identity.generationId],
+      );
+      await this.assertBarrierOffsetsCommitted(
+        identity,
+        verification.consumerGroupId,
+        barrierOffsets.rows,
+      );
       const failures = await client.query<{ count: number }>(
         `SELECT count(*)::int AS count FROM projection_runtime.failures
          WHERE projection_name=$1 AND generation_id=$2`,
@@ -324,40 +377,46 @@ export class ReplayCoordinator {
     }
   }
 
-  private async replayKafkaLag(
+  private async assertBarrierOffsetsCommitted(
     identity: ReplayIdentity,
     consumerGroupId: string,
-  ): Promise<bigint> {
+    barriers: {
+      topic_name: string | null;
+      partition_no: number;
+      kafka_offset: string | null;
+    }[],
+  ): Promise<void> {
     const topic = replayTopicName(identity.replayId);
+    if (
+      barriers.length !== kafkaPartitionCount ||
+      barriers.some(
+        (barrier) =>
+          barrier.topic_name !== topic || barrier.kafka_offset === null,
+      )
+    )
+      throw new Error("replay barriers lack Kafka delivery proof");
     const kafka = new KafkaJS.Kafka({ kafkaJS: { brokers: this.brokers } });
     const admin = kafka.admin();
     await admin.connect();
     try {
-      const [endOffsets, groupOffsets] = await Promise.all([
-        admin.fetchTopicOffsets(topic, {
-          isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
-        }),
-        admin.fetchOffsets({ groupId: consumerGroupId, topics: [topic] }),
-      ]);
+      const offsets = await admin.fetchOffsets({
+        groupId: consumerGroupId,
+        topics: [topic],
+      });
       const committed = new Map(
-        (groupOffsets[0]?.partitions ?? []).map((partition) => [
+        (offsets[0]?.partitions ?? []).map((partition) => [
           partition.partition,
           BigInt(partition.offset),
         ]),
       );
-      return endOffsets.reduce((lag, partition) => {
-        const low = BigInt(partition.low);
-        const high = BigInt(partition.high);
-        if (high < 0n) return lag;
-        const offset = committed.get(partition.partition) ?? low;
-        // Kafka reports -1 for a group with no committed offset.
-        const position = offset < low ? low : offset;
-        if (position > high)
+      for (const barrier of barriers) {
+        const offset = BigInt(barrier.kafka_offset!);
+        const position = committed.get(barrier.partition_no);
+        if (position === undefined || position <= offset)
           throw new Error(
-            `replay consumer offset ${position} is ahead of ${topic}/${partition.partition} high watermark ${high}`,
+            `replay barrier ${barrier.partition_no} was not consumed and committed`,
           );
-        return lag + (high - position);
-      }, 0n);
+      }
     } finally {
       await admin.disconnect();
     }

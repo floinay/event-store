@@ -6,8 +6,8 @@ import {
   ensureReplayTopic,
   kafkaDefaultPartition,
   ReplayCoordinator,
+  replayConnectorConfig,
   replayTopicName,
-  startReplay,
 } from "@event-store/replay";
 import { PostgresEventStore } from "@event-store/postgres-store";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
@@ -27,7 +27,7 @@ suite("replay coordinator", () => {
     await stack.stop();
   }, 60_000);
 
-  it("activates only consumer-verified, checksum-matching barriers", async () => {
+  it("refuses barriers without a committed replay-consumer offset", async () => {
     const identity = {
       projectionName: "orders",
       generationId: uuidv7(),
@@ -43,6 +43,14 @@ suite("replay coordinator", () => {
     await ensureReplayTopic([stack.kafkaBroker()], identity.replayId, 1);
     await expect(
       coordinator.activate(identity, {
+        kafkaLag: async () => 1n,
+        consumerGroupId: `replay-lagged-${uuidv7()}`,
+        checksums: async () => ({ expected: "same", actual: "same" }),
+      }),
+    ).rejects.toThrow("replay Kafka lag is 1");
+    await expect(
+      coordinator.activate(identity, {
+        kafkaLag: async () => 0n,
         consumerGroupId: `replay-empty-${uuidv7()}`,
         checksums: async () => ({ expected: "same", actual: "same" }),
       }),
@@ -51,24 +59,28 @@ suite("replay coordinator", () => {
       new PostgresEventStore(pool),
       identity.replayId,
     );
-    for (const barrier of barriers)
+    for (const barrier of barriers) {
+      const row = await pool.query<{ event_envelope: unknown }>(
+        "SELECT event_envelope FROM event_store.events WHERE event_id=$1",
+        [barrier.eventId],
+      );
       await coordinator.recordBarrier(
         identity,
-        barrier.partition,
-        barrier.eventId,
+        {
+          topic: replayTopicName(identity.replayId),
+          partition: barrier.partition,
+          offset: barrier.partition,
+          value: JSON.stringify(row.rows[0]?.event_envelope),
+        },
       );
-    await coordinator.activate(identity, {
-      consumerGroupId: `replay-empty-${uuidv7()}`,
-      checksums: async () => ({ expected: "same", actual: "same" }),
-    });
-    expect(
-      (
-        await pool.query(
-          "SELECT status FROM projection_runtime.generations WHERE projection_name=$1 AND generation_id=$2",
-          [identity.projectionName, identity.generationId],
-        )
-      ).rows[0]?.status,
-    ).toBe("active");
+    }
+    await expect(
+      coordinator.activate(identity, {
+        kafkaLag: async () => 0n,
+        consumerGroupId: `replay-empty-${uuidv7()}`,
+        checksums: async () => ({ expected: "same", actual: "same" }),
+      }),
+    ).rejects.toThrow("was not consumed and committed");
   });
 
   it("appends one default-partitioner-verified barrier for every partition", async () => {
@@ -88,7 +100,7 @@ suite("replay coordinator", () => {
     const identity = {
       projectionName: "orders-replay",
       generationId: uuidv7(),
-      replayId: `orders-${uuidv7().slice(0, 8)}`,
+      replayId: `orders-${uuidv7().replaceAll("-", "").slice(-12)}`,
     };
     const coordinator = new ReplayCoordinator(
       pool,
@@ -96,27 +108,24 @@ suite("replay coordinator", () => {
       [stack.kafkaBroker()],
       1,
     );
-    const barriers = await startReplay({
+    await coordinator.createGeneration(identity);
+    await coordinator.deployConnector(
       identity,
-      coordinatorDatabaseUrl: stack.databaseUrl,
-      appendDatabaseUrl: stack.databaseUrl,
-      connectorUrl: stack.connectUrl,
-      brokers: [stack.kafkaBroker()],
-      replicationFactor: 1,
-      connectorDatabase: {
+      replayConnectorConfig(identity.replayId, {
         hostname: "postgres",
         port: 5432,
         user: "event_store_cdc",
         password: "cdc",
         dbname: "event_store",
-      },
-    });
+      }),
+    );
     const kafka = new KafkaJS.Kafka({
       kafkaJS: { brokers: [stack.kafkaBroker()] },
     });
+    const consumerGroupId = `replay-barriers-${uuidv7()}`;
     const consumer = kafka.consumer({
       kafkaJS: {
-        groupId: `replay-barriers-${uuidv7()}`,
+        groupId: consumerGroupId,
         autoCommit: false,
         fromBeginning: true,
       },
@@ -126,6 +135,10 @@ suite("replay coordinator", () => {
       topics: [replayTopicName(identity.replayId)],
       replace: true,
     });
+    const barriers = await appendReplayBarriers(
+      new PostgresEventStore(pool),
+      identity.replayId,
+    );
     const barrierByEventId = new Map(
       barriers.map((barrier) => [barrier.eventId, barrier]),
     );
@@ -135,6 +148,7 @@ suite("replay coordinator", () => {
         () => reject(new Error("timed out waiting for replay barriers")),
         60_000,
       );
+      let quiet: ReturnType<typeof setTimeout> | undefined;
       void consumer.run({
         eachMessage: async ({ message, partition }) => {
           const event = JSON.parse(message.value?.toString() ?? "{}") as {
@@ -144,17 +158,29 @@ suite("replay coordinator", () => {
             event.eventId === undefined
               ? undefined
               : barrierByEventId.get(event.eventId);
-          if (barrier === undefined || received.has(barrier.eventId)) return;
-          expect(partition).toBe(barrier.partition);
-          await coordinator.recordBarrier(
-            identity,
-            barrier.partition,
-            barrier.eventId,
-          );
-          received.add(barrier.eventId);
+          if (barrier !== undefined && !received.has(barrier.eventId)) {
+            expect(partition).toBe(barrier.partition);
+            await coordinator.recordBarrier(identity, {
+              topic: replayTopicName(identity.replayId),
+              partition,
+              offset: message.offset,
+              value: message.value ?? Buffer.alloc(0),
+            });
+            received.add(barrier.eventId);
+          }
+          await consumer.commitOffsets([
+            {
+              topic: replayTopicName(identity.replayId),
+              partition,
+              offset: (BigInt(message.offset) + 1n).toString(),
+            },
+          ]);
           if (received.size === barriers.length) {
-            clearTimeout(timeout);
-            resolve();
+            if (quiet !== undefined) clearTimeout(quiet);
+            quiet = setTimeout(() => {
+              clearTimeout(timeout);
+              resolve();
+            }, 1_000);
           }
         },
       });
@@ -168,6 +194,11 @@ suite("replay coordinator", () => {
         )
       ).rows[0]?.count,
     ).toBe(24);
+    await coordinator.activate(identity, {
+      kafkaLag: async () => 0n,
+      consumerGroupId,
+      checksums: async () => ({ expected: "same", actual: "same" }),
+    });
     await coordinator.teardown(identity);
   }, 120_000);
 });
