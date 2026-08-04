@@ -438,6 +438,169 @@ suite("gRPC to CDC", () => {
     90_000,
   );
 
+  it("rolls back when the service dies while append_v1 holds the stream lock", async () => {
+    const address = "127.0.0.1:50065";
+    const pool = await stack.pool();
+    const holder = await pool.connect();
+    const barrierClass = 71_029;
+    const barrierKey = 1;
+    const definition = protoLoader.loadSync(
+      join(process.cwd(), "packages/contracts/proto/event_store.proto"),
+      { keepCase: true, longs: String, enums: String, defaults: false },
+    );
+    const service = (
+      grpc.loadPackageDefinition(definition) as unknown as {
+        eventstore: {
+          v1: { EventStoreService: grpc.ServiceClientConstructor };
+        };
+      }
+    ).eventstore.v1.EventStoreService;
+    const requestId = uuidv7();
+    const request = {
+      request_id: requestId,
+      namespace: "orders",
+      aggregate_type: "Order",
+      aggregate_id: uuidv7(),
+      expected_revision: { no_stream: {} },
+      context: {
+        correlation_id: uuidv7(),
+        actor_json: Buffer.from(
+          JSON.stringify({ kind: "user", subjectRef: "usr_stream_lock" }),
+        ),
+      },
+      events: [
+        {
+          event_name: "order.created",
+          schema_version: 1,
+          occurred_at: "2026-08-04T10:12:18.120Z",
+          payload_json: Buffer.from(JSON.stringify({ orderRef: "lock" })),
+        },
+      ],
+    };
+    const call = (appendClient: AppendClient) =>
+      new Promise<Record<string, unknown>>((resolve, reject) =>
+        appendClient.AppendToStream(request, (error, response) =>
+          error === null ? resolve(response ?? {}) : reject(error),
+        ),
+      );
+    let child: ChildProcess | undefined;
+    let appendClient: AppendClient | undefined;
+    try {
+      await holder.query("SELECT pg_advisory_lock($1,$2)", [
+        barrierClass,
+        barrierKey,
+      ]);
+      await pool.query(`
+        CREATE FUNCTION event_store.test_hold_stream_lock() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          PERFORM pg_advisory_xact_lock(${barrierClass}, ${barrierKey});
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER test_hold_stream_lock
+        BEFORE INSERT ON event_store.events
+        FOR EACH ROW EXECUTE FUNCTION event_store.test_hold_stream_lock();
+      `);
+      child = spawn(
+        process.execPath,
+        [join(process.cwd(), "apps/event-store-service/dist/index.js")],
+        {
+          env: {
+            ...process.env,
+            GRPC_LISTEN_ADDRESS: address,
+            HTTP_LISTEN_ADDRESS: undefined,
+          },
+          stdio: "ignore",
+        },
+      );
+      appendClient = new service(
+        address,
+        grpc.credentials.createInsecure(),
+      ) as AppendClient;
+      await new Promise<void>((resolve, reject) =>
+        appendClient!.waitForReady(Date.now() + 30_000, (error) =>
+          error === null || error === undefined ? resolve() : reject(error),
+        ),
+      );
+      const pending = call(appendClient).then(
+        () => "acknowledged" as const,
+        () => "connection_dropped" as const,
+      );
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const waiting = await pool.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM pg_stat_activity
+             WHERE datname=current_database()
+               AND wait_event_type='Lock' AND wait_event='advisory'
+               AND query LIKE '%append_v1%'`,
+        );
+        if ((waiting.rows[0]?.count ?? 0) > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await expect(
+        pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND wait_event='advisory' AND query LIKE '%append_v1%'",
+        ),
+      ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+      const exited = once(child, "exit");
+      child.kill("SIGKILL");
+      await exited;
+      await holder.query("SELECT pg_advisory_unlock($1,$2)", [
+        barrierClass,
+        barrierKey,
+      ]);
+      await expect(pending).resolves.toBe("connection_dropped");
+      await expect(
+        pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM event_store.events WHERE request_id=$1",
+          [requestId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ count: 0 }] });
+      child = spawn(
+        process.execPath,
+        [join(process.cwd(), "apps/event-store-service/dist/index.js")],
+        {
+          env: {
+            ...process.env,
+            GRPC_LISTEN_ADDRESS: address,
+            HTTP_LISTEN_ADDRESS: undefined,
+          },
+          stdio: "ignore",
+        },
+      );
+      appendClient.close();
+      appendClient = new service(
+        address,
+        grpc.credentials.createInsecure(),
+      ) as AppendClient;
+      await new Promise<void>((resolve, reject) =>
+        appendClient!.waitForReady(Date.now() + 30_000, (error) =>
+          error === null || error === undefined ? resolve() : reject(error),
+        ),
+      );
+      await expect(call(appendClient)).resolves.toMatchObject({
+        request_id: requestId,
+      });
+    } finally {
+      appendClient?.close();
+      if (child?.exitCode === null) {
+        const exited = once(child, "exit");
+        child.kill("SIGKILL");
+        await exited;
+      }
+      await holder
+        .query("SELECT pg_advisory_unlock($1,$2)", [barrierClass, barrierKey])
+        .catch(() => undefined);
+      await pool
+        .query(
+          "DROP TRIGGER IF EXISTS test_hold_stream_lock ON event_store.events; DROP FUNCTION IF EXISTS event_store.test_hold_stream_lock()",
+        )
+        .catch(() => undefined);
+      holder.release();
+      await pool.end();
+    }
+  }, 90_000);
+
   it("keeps a bounded durable append window after a Connect process crash", async () => {
     await stack.stopConnect();
     const pool = await stack.pool();
