@@ -14,6 +14,14 @@ const sampleCount = Number(process.env.LATENCY_SAMPLE_COUNT ?? 100);
 const concurrency = Number(process.env.LATENCY_CONCURRENCY ?? 1);
 const durationMs = Number(process.env.LATENCY_DURATION_MS ?? 0);
 const maxClockSkewMs = Number(process.env.MAX_CLOCK_SKEW_MS ?? 2);
+const appendRate = Number(process.env.LATENCY_APPEND_RATE ?? 0);
+const batchSize = Number(process.env.LATENCY_BATCH_SIZE ?? 1);
+const payloadBytes = Number(process.env.LATENCY_PAYLOAD_BYTES ?? 128);
+const streamCount = Number(process.env.LATENCY_STREAM_COUNT ?? 1_000);
+const hotStreamPercent = Number(process.env.LATENCY_HOT_STREAM_PERCENT ?? 0);
+const hotStreamCount = Number(process.env.LATENCY_HOT_STREAM_COUNT ?? 10);
+const producerCpuWorkMs = Number(process.env.LATENCY_PRODUCER_CPU_WORK_MS ?? 0);
+const consumerCpuWorkMs = Number(process.env.LATENCY_CONSUMER_CPU_WORK_MS ?? 0);
 const latencyTestTimeoutMs = Math.max(180_000, durationMs + 60_000);
 
 interface AppendClient extends grpc.Client {
@@ -26,6 +34,27 @@ interface AppendClient extends grpc.Client {
       },
     ) => void,
   ): grpc.ClientUnaryCall;
+}
+
+interface StreamState {
+  aggregateId: string;
+  nextRevision: bigint;
+  tail: Promise<void>;
+}
+
+function positiveInteger(name: string, value: number, minimum = 1): void {
+  if (!Number.isInteger(value) || value < minimum)
+    throw new Error(`${name} must be an integer of at least ${minimum}`);
+}
+
+function busyWork(milliseconds: number): void {
+  if (milliseconds === 0) return;
+  const deadline = performance.now() + milliseconds;
+  while (performance.now() < deadline);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function percentile(samples: readonly number[], quantile: number): number {
@@ -96,6 +125,22 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         throw new Error("LATENCY_DURATION_MS must be a non-negative number");
       if (!Number.isFinite(maxClockSkewMs) || maxClockSkewMs < 0)
         throw new Error("MAX_CLOCK_SKEW_MS must be a non-negative number");
+      if (!Number.isFinite(appendRate) || appendRate < 0)
+        throw new Error("LATENCY_APPEND_RATE must be a non-negative number");
+      positiveInteger("LATENCY_BATCH_SIZE", batchSize);
+      positiveInteger("LATENCY_PAYLOAD_BYTES", payloadBytes, 0);
+      positiveInteger("LATENCY_STREAM_COUNT", streamCount);
+      if (
+        !Number.isFinite(hotStreamPercent) ||
+        hotStreamPercent < 0 ||
+        hotStreamPercent > 100
+      )
+        throw new Error("LATENCY_HOT_STREAM_PERCENT must be 0..100");
+      positiveInteger("LATENCY_HOT_STREAM_COUNT", hotStreamCount);
+      if (!Number.isFinite(producerCpuWorkMs) || producerCpuWorkMs < 0)
+        throw new Error("LATENCY_PRODUCER_CPU_WORK_MS must be non-negative");
+      if (!Number.isFinite(consumerCpuWorkMs) || consumerCpuWorkMs < 0)
+        throw new Error("LATENCY_CONSUMER_CPU_WORK_MS must be non-negative");
       if (process.env.RUN_RELEASE_LATENCY === "true" && durationMs < 1_800_000)
         throw new Error("release latency profile requires at least 30 minutes");
       const committed = new Map<string, number>();
@@ -116,20 +161,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         topics: ["event-store.events.v1"],
         replace: true,
       });
-      const clockProbeStarted = Date.now();
-      const databaseClock = await pool.query<{ epoch_ms: string }>(
-        "SELECT (extract(epoch FROM clock_timestamp()) * 1000)::text AS epoch_ms",
-      );
-      const clockProbeFinished = Date.now();
-      const databaseEpochMs = Number(databaseClock.rows[0]?.epoch_ms);
-      if (!Number.isFinite(databaseEpochMs))
-        throw new Error("PostgreSQL did not return a measurable wall clock");
-      const consumerClockAtProbe = (clockProbeStarted + clockProbeFinished) / 2;
-      expect(
-        Math.abs(consumerClockAtProbe - databaseEpochMs),
-      ).toBeLessThanOrEqual(
-        maxClockSkewMs + (clockProbeFinished - clockProbeStarted) / 2,
-      );
+      const clockOffsetMs = await calibrateClockOffset(pool, maxClockSkewMs);
       let warmupEventId: string | undefined;
       let appendsFinished = false;
       let warmupObserved!: () => void;
@@ -151,6 +183,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
             if (eventId === undefined) return;
             observed.set(eventId, receivedAt);
             if (eventId === warmupEventId) warmupObserved();
+            busyWork(consumerCpuWorkMs);
             if (appendsFinished && allSamplesReceived(committed, observed)) {
               clearTimeout(deadline);
               received();
@@ -158,33 +191,75 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
           },
         });
       });
-      warmupEventId = (await append(client, uuidv7(), uuidv7(), "warmup"))
-        .eventId;
+      warmupEventId = (
+        await append(client, uuidv7(), uuidv7(), 0n, 1, 0, "warmup")
+      ).eventIds[0];
+      if (warmupEventId === undefined)
+        throw new Error("warmup append omitted its event ID");
       if (observed.has(warmupEventId)) warmupObserved();
       await warmup;
+      const streams: StreamState[] = Array.from(
+        { length: streamCount },
+        () => ({
+          aggregateId: uuidv7(),
+          nextRevision: 0n,
+          tail: Promise.resolve(),
+        }),
+      );
       const deadline = performance.now() + durationMs;
       let index = 0;
-      do {
-        await Promise.all(
-          Array.from({ length: concurrency }, async () => {
-            const requestId = uuidv7();
-            const aggregateId = uuidv7();
-            const appendResult = await append(
-              client,
-              requestId,
-              aggregateId,
-              String(index++),
-            );
-            committed.set(appendResult.eventId, appendResult.commitEpochMs);
-          }),
-        );
-      } while (committed.size < sampleCount || performance.now() < deadline);
+      let nextRateSlot = performance.now();
+      const appendOne = async (): Promise<void> => {
+        const current = index++;
+        if (appendRate > 0) {
+          const slot = nextRateSlot;
+          nextRateSlot =
+            Math.max(nextRateSlot, performance.now()) + 1_000 / appendRate;
+          await delay(Math.max(0, slot - performance.now()));
+        }
+        const useHot = current % 100 < hotStreamPercent;
+        const limit = useHot
+          ? Math.min(hotStreamCount, streams.length)
+          : streams.length;
+        const stream = streams[current % limit]!;
+        const previous = stream.tail;
+        let release!: () => void;
+        stream.tail = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await previous;
+        try {
+          busyWork(producerCpuWorkMs);
+          const result = await append(
+            client,
+            uuidv7(),
+            stream.aggregateId,
+            stream.nextRevision,
+            batchSize,
+            payloadBytes,
+            String(current),
+          );
+          stream.nextRevision += BigInt(batchSize);
+          for (const eventId of result.eventIds)
+            committed.set(eventId, result.commitEpochMs);
+        } finally {
+          release();
+        }
+      };
+      const worker = async (): Promise<void> => {
+        while (committed.size < sampleCount || performance.now() < deadline)
+          await appendOne();
+      };
+      await Promise.all(Array.from({ length: concurrency }, worker));
       appendsFinished = true;
       if (allSamplesReceived(committed, observed)) received();
       await samplesReceived;
       await consumer.disconnect();
       const samples = [...committed]
-        .map(([eventId, committedAt]) => observed.get(eventId)! - committedAt)
+        .map(
+          ([eventId, committedAt]) =>
+            observed.get(eventId)! - committedAt - clockOffsetMs,
+        )
         .sort((left, right) => left - right);
       const metrics = {
         samples: samples.length,
@@ -223,12 +298,42 @@ function allSamplesReceived(
   );
 }
 
+async function calibrateClockOffset(
+  pool: Pool,
+  maxClockSkewMs: number,
+): Promise<number> {
+  const probes = await Promise.all(
+    Array.from({ length: 7 }, async () => {
+      const started = Date.now();
+      const result = await pool.query<{ epoch_ms: string }>(
+        "SELECT (extract(epoch FROM clock_timestamp()) * 1000)::text AS epoch_ms",
+      );
+      const finished = Date.now();
+      const databaseEpochMs = Number(result.rows[0]?.epoch_ms);
+      if (!Number.isFinite(databaseEpochMs))
+        throw new Error("PostgreSQL did not return a measurable wall clock");
+      return {
+        roundTripMs: finished - started,
+        offsetMs: (started + finished) / 2 - databaseEpochMs,
+      };
+    }),
+  );
+  const offsets = probes.map((probe) => probe.offsetMs).sort((a, b) => a - b);
+  const spread = offsets.at(-1)! - offsets[0]!;
+  expect(spread).toBeLessThanOrEqual(maxClockSkewMs * 2 + 2);
+  return probes.sort((left, right) => left.roundTripMs - right.roundTripMs)[0]!
+    .offsetMs;
+}
+
 function append(
   client: AppendClient,
   requestId: string,
   aggregateId: string,
+  currentRevision: bigint,
+  eventsPerAppend: number,
+  bytesPerPayload: number,
   index: string,
-): Promise<{ eventId: string; commitEpochMs: number }> {
+): Promise<{ eventIds: string[]; commitEpochMs: number }> {
   return new Promise((resolve, reject) => {
     let commitEpochMs: number | undefined;
     const call = client.AppendToStream(
@@ -237,30 +342,41 @@ function append(
         namespace: "latency",
         aggregate_type: "Probe",
         aggregate_id: aggregateId,
-        expected_revision: { no_stream: {} },
+        expected_revision:
+          currentRevision === 0n
+            ? { no_stream: {} }
+            : { exact_revision: currentRevision.toString() },
         context: {
           correlation_id: uuidv7(),
           actor_json: Buffer.from(
             JSON.stringify({ kind: "service", subjectRef: "latency-probe" }),
           ),
         },
-        events: [
-          {
-            event_name: "probe.appended",
-            schema_version: 1,
-            occurred_at: new Date().toISOString(),
-            payload_json: Buffer.from(JSON.stringify({ index })),
-          },
-        ],
+        events: Array.from({ length: eventsPerAppend }, (_, eventIndex) => ({
+          event_name: "probe.appended",
+          schema_version: 1,
+          occurred_at: new Date().toISOString(),
+          payload_json: Buffer.from(
+            JSON.stringify({
+              index: `${index}:${eventIndex}`,
+              data: "x".repeat(bytesPerPayload),
+            }),
+          ),
+        })),
       },
       (error, response) => {
         if (error !== null) {
           reject(error);
           return;
         }
-        const eventId =
-          response?.events?.[0]?.event_id ?? response?.events?.[0]?.eventId;
-        if (eventId === undefined || commitEpochMs === undefined) {
+        const eventIds = (response?.events ?? []).map(
+          (event) => event.event_id ?? event.eventId,
+        );
+        if (
+          eventIds.length !== eventsPerAppend ||
+          eventIds.some((eventId) => eventId === undefined) ||
+          commitEpochMs === undefined
+        ) {
           reject(
             new Error(
               `append acknowledgement omitted event ID or commit span: ${JSON.stringify(response)}`,
@@ -268,7 +384,7 @@ function append(
           );
           return;
         }
-        resolve({ eventId, commitEpochMs });
+        resolve({ eventIds: eventIds as string[], commitEpochMs });
       },
     );
     call.once("metadata", (metadata) => {
