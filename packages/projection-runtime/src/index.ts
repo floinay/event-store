@@ -363,12 +363,17 @@ export class ProjectionTransactionRunner {
         new ProjectionRebalanceError("projection assignment was revoked"),
       );
     };
+    const assertNotRebalanced = (): void => {
+      if (options.abortSignal?.aborted)
+        throw new ProjectionRebalanceError("projection assignment was revoked");
+    };
     if (options.abortSignal?.aborted) onExternalAbort();
     else
       options.abortSignal?.addEventListener("abort", onExternalAbort, {
         once: true,
       });
     try {
+      assertNotRebalanced();
       await client.query("BEGIN");
       if (options.transactionTimeoutMs !== undefined)
         await client.query(
@@ -384,6 +389,7 @@ export class ProjectionTransactionRunner {
           record.partition,
         ],
       );
+      assertNotRebalanced();
       const nextOffset =
         checkpoint.rows[0] === undefined
           ? record.offset
@@ -409,6 +415,7 @@ export class ProjectionTransactionRunner {
           record.offset.toString(),
         ],
       );
+      assertNotRebalanced();
       if (inserted.rowCount === 0) {
         const existing = await client.query<{ envelope_sha256: string }>(
           "SELECT envelope_sha256 FROM projection_runtime.inbox WHERE projection_name=$1 AND generation_id=$2 AND event_id=$3",
@@ -436,8 +443,10 @@ export class ProjectionTransactionRunner {
             }),
           );
         await Promise.race(races);
+        assertNotRebalanced();
         await this.crashBarrier?.hit("after_read_model_mutation");
       }
+      assertNotRebalanced();
       await client.query(
         `INSERT INTO projection_runtime.checkpoints(projection_name,generation_id,topic_name,partition_no,next_offset,last_event_id,updated_at)
          VALUES ($1,$2,$3,$4,$5,$6,clock_timestamp())
@@ -452,7 +461,9 @@ export class ProjectionTransactionRunner {
           event.eventId,
         ],
       );
+      assertNotRebalanced();
       await this.crashBarrier?.hit("after_checkpoint_update");
+      assertNotRebalanced();
       await client.query("COMMIT");
       await this.crashBarrier?.hit("after_database_commit");
       return inserted.rowCount === 1 ? "processed" : "duplicate";
