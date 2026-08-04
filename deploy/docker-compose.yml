@@ -70,6 +70,14 @@ services:
       VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
       EXACTLY_ONCE_SOURCE_SUPPORT: enabled
       CONNECT_EXACTLY_ONCE_SOURCE_SUPPORT: enabled
+      CONNECT_CONFIG_PROVIDERS: file
+      CONNECT_CONFIG_PROVIDERS_FILE_CLASS: org.apache.kafka.common.config.provider.FileConfigProvider
+    secrets:
+      - source: db-properties
+        target: db.properties
 volumes:
   postgres-data:
   postgres-wal-archive:
+secrets:
+  db-properties:
+    file: ${EVENT_STORE_DB_PROPERTIES_FILE:?set EVENT_STORE_DB_PROPERTIES_FILE to a db.properties secret}
