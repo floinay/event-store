@@ -252,14 +252,17 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         }),
       );
       const deadline = performance.now() + durationMs;
+      let faultWindow: { startedAt: number; recoveredAt: number } | undefined;
       const fault =
         latencyFault === "none"
           ? undefined
           : (async () => {
               await delay(latencyFaultAtMs);
+              const startedAt = Date.now();
               if (latencyFault === "connect_restart")
                 await stack.restartConnect();
               else await stack.restartKafka();
+              faultWindow = { startedAt, recoveredAt: Date.now() };
             })();
       let index = 0;
       let nextRateSlot = performance.now();
@@ -326,8 +329,18 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       if (allSamplesReceived(committed, observed)) received();
       await samplesReceived;
       await consumer.disconnect();
-      const samples = [...committed]
-        .map(([eventId, committedAt]) => observed.get(eventId)! - committedAt)
+      const allSamples = [...committed].map(([eventId, committedAt]) => ({
+        committedAt,
+        observedAt: observed.get(eventId)!,
+      }));
+      const samples = allSamples
+        .filter(
+          ({ committedAt, observedAt }) =>
+            faultWindow === undefined ||
+            observedAt <= faultWindow.startedAt ||
+            committedAt >= faultWindow.recoveredAt,
+        )
+        .map(({ committedAt, observedAt }) => observedAt - committedAt)
         .sort((left, right) => left - right);
       const metrics = {
         samples: samples.length,
@@ -349,6 +362,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       };
       console.info(`CDC latency metrics: ${JSON.stringify(metrics)}`);
       console.info(`Append latency metrics: ${JSON.stringify(appendMetrics)}`);
+      expect(allSamples).toHaveLength(committed.size);
       expect(metrics.samples).toBeGreaterThanOrEqual(sampleCount);
       expect(appendMetrics.samples).toBeGreaterThanOrEqual(sampleCount);
       expect(appendMetrics.p50).toBeLessThanOrEqual(15);
