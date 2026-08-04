@@ -33,6 +33,7 @@ describe("production HA topology", () => {
     expect(compose).toContain('"-c",\n        "track_commit_timestamp=off"');
     expect(postgres).toContain("bootstrap:");
     expect(postgres).toContain("database: event_store");
+    expect(postgres).toContain("dataChecksums: true");
     expect(postgres).toContain("minSyncReplicas: 1");
     expect(postgres).toContain("synchronizeLogicalDecoding: true");
     expect(postgres).toContain("synchronizeReplicas:");
@@ -45,6 +46,8 @@ describe("production HA topology", () => {
     expect(kafka).toContain("replicas: 3");
     expect(kafka).toContain("roles: [controller, broker]");
     expect(kafka).toContain("min.insync.replicas: 2");
+    expect(kafka).toContain("size: 2Ti");
+    expect(kafka).toContain('requests: { cpu: "8", memory: 32Gi }');
     expect(runtime.match(/replicas: 3/g)).toHaveLength(2);
     expect(runtime).toContain("EXACTLY_ONCE_SOURCE_SUPPORT");
     expect(runtime).toContain("CONNECT_EXACTLY_ONCE_SOURCE_SUPPORT");

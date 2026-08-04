@@ -13,8 +13,11 @@ spec:
     volumes:
       - id: 0
         type: persistent-claim
-        size: 200Gi
+        size: 2Ti
         deleteClaim: false
+  resources:
+    requests: { cpu: "8", memory: 32Gi }
+    limits: { cpu: "8", memory: 32Gi }
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: Kafka
