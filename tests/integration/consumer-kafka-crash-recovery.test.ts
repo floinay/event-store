@@ -41,6 +41,11 @@ suite("projection consumer Kafka crash recovery", () => {
 
   it.each([
     ["after_kafka_poll", 1],
+    ["before_database_connection", 1],
+    ["after_inbox_insert", 1],
+    ["after_read_model_mutation", 1],
+    ["after_checkpoint_update", 1],
+    ["after_database_commit", 1],
     ["before_kafka_offset_commit", 1],
     ["after_kafka_offset_commit", 2],
   ] as const)(
