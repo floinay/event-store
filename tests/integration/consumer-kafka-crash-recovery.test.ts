@@ -1,5 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { fileURLToPath } from "node:url";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { canonicalJson, partitionKey, uuidv7 } from "@event-store/contracts";
 import {
@@ -15,12 +18,48 @@ import type { Pool } from "pg";
 const suite = process.env.RUN_INTEGRATION === "true" ? describe : describe.skip;
 
 async function eventually(check: () => Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     if (await check()) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("condition did not become true within 30 seconds");
+  throw new Error("condition did not become true within 60 seconds");
+}
+
+async function waitForReady(child: ChildProcess): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let output = "";
+    const timeout = setTimeout(
+      () =>
+        reject(new Error(`projection worker did not become ready: ${output}`)),
+      30_000,
+    );
+    child.on("message", (message) => {
+      output += String(message);
+      if (message === "BOOTED") {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timeout);
+      reject(
+        new Error(
+          `projection worker exited before ready: code=${code ?? "null"} signal=${signal ?? "null"} ${output}`,
+        ),
+      );
+    });
+  });
+}
+
+async function stopWorker(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, "exit");
+  child.kill("SIGKILL");
+  await exited;
 }
 
 suite("projection consumer Kafka crash recovery", () => {
@@ -72,14 +111,29 @@ suite("projection consumer Kafka crash recovery", () => {
       const crashed = new Promise<void>((resolve) => {
         reached = resolve;
       });
-      const makeRunner = (crash = false) =>
-        new KafkaProjectionRunner(
+      const makeRunner = (crash = false) => {
+        const crashBarrier = crash
+          ? {
+              hit: (hit: string) => {
+                if (hit === point) {
+                  reached();
+                  throw new ProjectionCrashError(`crash at ${point}`);
+                }
+              },
+            }
+          : undefined;
+        return new KafkaProjectionRunner(
           {
             brokers: [stack.kafkaBroker()],
             groupId: `consumer-crash-${generationId}`,
             topic,
           },
-          new ProjectionTransactionRunner(pool, identity, (event) => event),
+          new ProjectionTransactionRunner(
+            pool,
+            identity,
+            (event) => event,
+            crashBarrier,
+          ),
           async (client, event) => {
             await client.query(
               "INSERT INTO consumer_kafka_crash.events(projection_name,event_id) VALUES ($1,$2)",
@@ -89,17 +143,9 @@ suite("projection consumer Kafka crash recovery", () => {
           new ProjectionCheckpointStore(pool, identity),
           new ProjectionFailureReporter(pool, identity),
           undefined,
-          crash
-            ? {
-                hit: (hit) => {
-                  if (hit === point) {
-                    reached();
-                    throw new ProjectionCrashError(`crash at ${point}`);
-                  }
-                },
-              }
-            : undefined,
+          crashBarrier,
         );
+      };
       let consumer = await makeRunner(true).start();
       const producer = kafka.producer({
         kafkaJS: { idempotent: true, acks: -1 },
@@ -166,5 +212,139 @@ suite("projection consumer Kafka crash recovery", () => {
       }
     },
     90_000,
+  );
+
+  it.each([
+    "after_kafka_poll",
+    "before_database_connection",
+    "after_inbox_insert",
+    "after_read_model_mutation",
+    "after_checkpoint_update",
+    "after_database_commit",
+    "before_kafka_offset_commit",
+    "after_kafka_offset_commit",
+  ] as const)(
+    "recovers after a real process SIGKILL at %s",
+    async (point) => {
+      const kafka = new KafkaJS.Kafka({
+        kafkaJS: { brokers: [stack.kafkaBroker()] },
+      });
+      const topic = `consumer-process-crash-${uuidv7()}`;
+      const admin = kafka.admin();
+      await admin.connect();
+      await admin.createTopics({
+        topics: [{ topic, numPartitions: 1, replicationFactor: 1 }],
+      });
+      await admin.disconnect();
+      const generationId = uuidv7();
+      const projectionName = `process-crash-${point}`;
+      await pool.query(
+        "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ($1,$2,'building',clock_timestamp())",
+        [projectionName, generationId],
+      );
+      const worker = (crashPoint?: string): ChildProcess =>
+        spawn(
+          process.execPath,
+          [
+            fileURLToPath(
+              new URL(
+                "../fixtures/projection-crash-worker.mjs",
+                import.meta.url,
+              ),
+            ),
+          ],
+          {
+            env: {
+              ...process.env,
+              DATABASE_URL: stack.databaseUrl,
+              KAFKA_BROKER: stack.kafkaBroker(),
+              TOPIC: topic,
+              GROUP_ID: `consumer-process-crash-${generationId}`,
+              PROJECTION_NAME: projectionName,
+              GENERATION_ID: generationId,
+              ...(crashPoint === undefined ? {} : { CRASH_POINT: crashPoint }),
+            },
+            stdio: ["ignore", "pipe", "pipe", "ipc"],
+          },
+        );
+      const crashing = worker(point);
+      const crashingReady = waitForReady(crashing);
+      let recovering: ChildProcess | undefined;
+      let recoveringReady: Promise<void> | undefined;
+      const producer = kafka.producer({
+        kafkaJS: { idempotent: true, acks: -1 },
+      });
+      await producer.connect();
+      const aggregateId = uuidv7();
+      const event = {
+        eventId: uuidv7(),
+        namespace: "orders",
+        aggregateType: "Order",
+        aggregateId,
+        streamRevision: "1",
+        eventNumber: "1",
+        eventName: "order.created",
+        schemaVersion: 1,
+        occurredAt: "2026-08-04T10:12:18.120Z",
+        recordedAt: "2026-08-04T10:12:18.120Z",
+        producerService: "orders-command",
+        context: {
+          requestId: uuidv7(),
+          correlationId: uuidv7(),
+          causationId: null,
+          actor: { kind: "service" as const, subjectRef: "consumer-crash" },
+        },
+        payload: { point },
+      };
+      try {
+        await crashingReady;
+        const value = canonicalJson(event);
+        const crashed = once(crashing, "exit");
+        await producer.send({
+          topic,
+          messages: [
+            {
+              key: partitionKey(event),
+              value,
+              headers: {
+                id: event.eventId,
+                type: event.eventName,
+                envelopeHash: createHash("sha256").update(value).digest("hex"),
+                namespace: event.namespace,
+                aggregateType: event.aggregateType,
+                streamRevision: event.streamRevision,
+              },
+            },
+          ],
+        });
+        const [code, signal] = await crashed;
+        expect(code).toBeNull();
+        expect(signal).toBe("SIGKILL");
+        recovering = worker();
+        recoveringReady = waitForReady(recovering);
+        await recoveringReady;
+        await eventually(async () => {
+          const result = await pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM consumer_kafka_crash.events WHERE projection_name=$1",
+            [projectionName],
+          );
+          return result.rows[0]?.count === 1;
+        });
+        const checkpoint = await new ProjectionCheckpointStore(pool, {
+          name: projectionName,
+          generationId,
+        }).nextOffset(topic, 0);
+        expect(checkpoint).toBe(1n);
+      } finally {
+        await stopWorker(crashing).catch(() => undefined);
+        if (recovering !== undefined)
+          await stopWorker(recovering).catch(() => undefined);
+        await Promise.race([
+          producer.disconnect().catch(() => undefined),
+          new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+        ]);
+      }
+    },
+    120_000,
   );
 });
