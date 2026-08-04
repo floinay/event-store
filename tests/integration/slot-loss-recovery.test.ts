@@ -11,7 +11,10 @@ import {
   ProjectionPayloadSchemas,
   ProjectionTransactionRunner,
 } from "@event-store/projection-runtime";
-import { appendReplayBarriers } from "@event-store/replay";
+import {
+  RecoveryCutoverCoordinator,
+  appendReplayBarriers,
+} from "@event-store/replay";
 import { UpcasterRegistry } from "@event-store/upcasting";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
 import type { Pool } from "pg";
@@ -51,11 +54,15 @@ suite("logical slot-loss recovery", () => {
     upcasters.setCurrentVersion("recovery.appended", 1);
     upcasters.setCurrentVersion("system.replaybarrier", 1);
     const schemas = new ProjectionPayloadSchemas();
-    schemas.register("recovery.appended", 1, z.object({ marker: z.string() }));
+    schemas.register(
+      "recovery.appended",
+      1,
+      z.object({ marker: z.string() }).strict(),
+    );
     schemas.register(
       "system.replaybarrier",
       1,
-      z.object({ replayId: z.string(), partition: z.string() }),
+      z.object({ replayId: z.string(), partition: z.string() }).strict(),
     );
     const identity = { name: projectionName, generationId };
     const beforeRequestId = uuidv7();
@@ -164,21 +171,23 @@ suite("logical slot-loss recovery", () => {
         recoveryId,
       ),
     );
-    await pool.query(
-      "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4,$5,$6)",
-      [
-        recoverySlot,
-        recoveryConnector,
-        projectionName,
-        generationId,
-        recoveryId,
-        consumerGroupId,
-      ],
-    );
-    await pool.query(
-      "SELECT event_store.activate_recovery_cdc_slot($1,$2,$3)",
-      [recoverySlot, recoveryConnector, (8n * 1024n ** 3n).toString()],
-    );
+    await new RecoveryCutoverCoordinator(pool, stack.connectUrl, [
+      stack.kafkaBroker(),
+    ]).activate(recoverySlot, recoveryConnector, 8n * 1024n ** 3n, {
+      projectionName,
+      generationId,
+      replayId: recoveryId,
+      consumerGroupId,
+      kafkaLag: async () =>
+        (await recoveryBarriersHaveNoLogicalLag(
+          pool,
+          projectionName,
+          generationId,
+          recoveryId,
+        ))
+          ? 0n
+          : 1n,
+    });
     await append(store, uuidv7(), "after-slot-recovery");
     await eventually(async () => {
       const missing = await pool.query<{ count: number }>(

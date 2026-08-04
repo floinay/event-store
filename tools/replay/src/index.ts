@@ -59,6 +59,16 @@ export interface ReplayStartOptions {
   connectorDatabase: Parameters<typeof replayConnectorConfig>[1];
 }
 
+/** Runtime-owned evidence required before a recovered CDC slot can take writes. */
+export interface RecoveryCutoverVerification {
+  projectionName: string;
+  generationId: string;
+  replayId: string;
+  consumerGroupId: string;
+  /** Must measure readable records, not raw Kafka high-watermark positions. */
+  kafkaLag: () => Promise<bigint>;
+}
+
 const kafkaPartitionCount = 24;
 const maxReplayIdLength = 44;
 
@@ -491,6 +501,115 @@ export class ReplayCoordinator {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     throw new Error(`replay connector did not release slot ${slotName}`);
+  }
+}
+
+/**
+ * Performs the external half of slot-loss cutover before invoking the
+ * database's durable barrier/reconciliation gate. This keeps arbitrary SQL
+ * arguments from being treated as proof that Connect and Kafka are healthy.
+ */
+export class RecoveryCutoverCoordinator {
+  constructor(
+    private readonly pool: Pool,
+    private readonly connectorUrl: string,
+    private readonly brokers: string[],
+  ) {}
+
+  async activate(
+    slotName: string,
+    connectorName: string,
+    walBudgetBytes: bigint,
+    verification: RecoveryCutoverVerification,
+  ): Promise<void> {
+    if ((await verification.kafkaLag()) !== 0n)
+      throw new Error("recovery projection Kafka lag is not zero");
+    await Promise.all([
+      this.assertConnectorDelivery(slotName, connectorName),
+      this.assertConsumerGroup(verification.consumerGroupId),
+    ]);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4,$5,$6)",
+        [
+          slotName,
+          connectorName,
+          verification.projectionName,
+          verification.generationId,
+          verification.replayId,
+          verification.consumerGroupId,
+        ],
+      );
+      await client.query(
+        "SELECT event_store.activate_recovery_cdc_slot($1,$2,$3)",
+        [slotName, connectorName, walBudgetBytes.toString()],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async assertConnectorDelivery(
+    slotName: string,
+    connectorName: string,
+  ): Promise<void> {
+    const [statusResponse, configResponse] = await Promise.all([
+      fetch(`${this.connectorUrl}/connectors/${connectorName}/status`),
+      fetch(`${this.connectorUrl}/connectors/${connectorName}/config`),
+    ]);
+    if (!statusResponse.ok || !configResponse.ok)
+      throw new Error("recovery connector status or config is unavailable");
+    const [status, config] = await Promise.all([
+      statusResponse.json() as Promise<{
+        connector?: { state?: string };
+        tasks?: { state?: string }[];
+      }>,
+      configResponse.json() as Promise<Record<string, string>>,
+    ]);
+    if (
+      status.connector?.state !== "RUNNING" ||
+      status.tasks?.length !== 1 ||
+      status.tasks[0]?.state !== "RUNNING" ||
+      config["connector.class"] !==
+        "io.debezium.connector.postgresql.PostgresConnector" ||
+      config["slot.name"] !== slotName ||
+      config["table.include.list"] !== "event_store.events" ||
+      config["transforms.outbox.table.field.event.payload"] !==
+        "event_envelope_kafka" ||
+      config["transforms.outbox.route.topic.replacement"] !== "$1.events.v1" ||
+      config["exactly.once.support"] !== "required"
+    )
+      throw new Error(
+        "recovery connector does not prove canonical Kafka delivery",
+      );
+  }
+
+  private async assertConsumerGroup(consumerGroupId: string): Promise<void> {
+    const kafka = new KafkaJS.Kafka({ kafkaJS: { brokers: this.brokers } });
+    const admin = kafka.admin();
+    await admin.connect();
+    try {
+      const offsets = await admin.fetchOffsets({
+        groupId: consumerGroupId,
+        topics: ["event-store.events.v1"],
+      });
+      const partitions = offsets[0]?.partitions ?? [];
+      if (
+        partitions.length !== kafkaPartitionCount ||
+        partitions.some((partition) => BigInt(partition.offset) < 0n)
+      )
+        throw new Error(
+          "recovery projection consumer group lacks committed offsets",
+        );
+    } finally {
+      await admin.disconnect();
+    }
   }
 }
 
