@@ -30,10 +30,14 @@ async function withHeartbeats<T>(
   heartbeat: () => Promise<void>,
 ): Promise<T> {
   let finished = false;
+  let stopPulse!: () => void;
+  const stopped = new Promise<void>((resolve) => {
+    stopPulse = resolve;
+  });
   let heartbeatError: unknown;
   const pulse = (async () => {
     while (!finished) {
-      await wait(1_000);
+      await Promise.race([wait(1_000), stopped]);
       if (!finished) {
         try {
           await heartbeat();
@@ -50,6 +54,7 @@ async function withHeartbeats<T>(
     return result;
   } finally {
     finished = true;
+    stopPulse();
     await pulse;
   }
 }
