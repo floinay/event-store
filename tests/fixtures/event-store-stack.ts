@@ -267,6 +267,14 @@ EOF
     await admin.disconnect();
     this.#connectUsesKafkaProxy = options.connectKafkaProxy === true;
     await this.startConnect(options.toxiproxy === true);
+    const admission = new Pool({ connectionString: this.databaseUrl });
+    try {
+      await admission.query(
+        "SELECT event_store.enable_append_admission(8589934592)",
+      );
+    } finally {
+      await admission.end();
+    }
   }
 
   async startConnect(viaToxiproxy = this.#connectUsesToxiproxy): Promise<void> {
