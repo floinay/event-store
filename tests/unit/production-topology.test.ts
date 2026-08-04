@@ -61,6 +61,8 @@ describe("production HA topology", () => {
     expect(runtime).toContain("PRODUCER_SERVICE");
     expect(runtime).toContain("HTTP_LISTEN_ADDRESS");
     expect(runtime).toContain("NODE_OPTIONS");
+    expect(runtime).toContain("name: NODE_ENV");
+    expect(runtime).toContain("value: production");
     expect(runtime).toContain("--max-old-space-size=6144");
     expect(runtime).toContain("memory: 4Gi");
     expect(runtime).toContain("GRPC_TLS_CERT_PEM");

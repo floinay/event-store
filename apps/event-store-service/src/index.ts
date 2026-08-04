@@ -779,32 +779,30 @@ export async function startServer(
       }
     },
   });
-  const credentials =
-    process.env.GRPC_ALLOW_INSECURE === "true"
-      ? grpc.ServerCredentials.createInsecure()
-      : (() => {
-          const certificate = process.env.GRPC_TLS_CERT_PEM;
-          const key = process.env.GRPC_TLS_KEY_PEM;
-          const ca = process.env.GRPC_TLS_CA_PEM;
-          if (
-            certificate === undefined ||
-            key === undefined ||
-            ca === undefined
-          )
-            throw new Error(
-              "mTLS credentials are required; set GRPC_ALLOW_INSECURE=true only for local development",
-            );
-          return grpc.ServerCredentials.createSsl(
-            Buffer.from(ca),
-            [
-              {
-                cert_chain: Buffer.from(certificate),
-                private_key: Buffer.from(key),
-              },
-            ],
-            true,
+  const insecureGrpc = process.env.GRPC_ALLOW_INSECURE === "true";
+  if (insecureGrpc && process.env.NODE_ENV === "production")
+    throw new Error("GRPC_ALLOW_INSECURE is forbidden in production");
+  const credentials = insecureGrpc
+    ? grpc.ServerCredentials.createInsecure()
+    : (() => {
+        const certificate = process.env.GRPC_TLS_CERT_PEM;
+        const key = process.env.GRPC_TLS_KEY_PEM;
+        const ca = process.env.GRPC_TLS_CA_PEM;
+        if (certificate === undefined || key === undefined || ca === undefined)
+          throw new Error(
+            "mTLS credentials are required; set GRPC_ALLOW_INSECURE=true only for local development",
           );
-        })();
+        return grpc.ServerCredentials.createSsl(
+          Buffer.from(ca),
+          [
+            {
+              cert_chain: Buffer.from(certificate),
+              private_key: Buffer.from(key),
+            },
+          ],
+          true,
+        );
+      })();
   await new Promise<void>((resolve, reject) =>
     server.bindAsync(address, credentials, (error) =>
       error === null ? resolve() : reject(error),

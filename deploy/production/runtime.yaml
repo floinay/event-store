@@ -32,6 +32,8 @@ spec:
             - { name: grpc, containerPort: 50051 }
             - { name: http, containerPort: 8080 }
           env:
+            - name: NODE_ENV
+              value: production
             - name: NODE_OPTIONS
               value: --max-old-space-size=6144
             - name: DATABASE_URL
