@@ -65,6 +65,9 @@ describe("slot-loss recovery connector", () => {
     expect(recoveryConnectorName("slot-loss-aug-2026")).toBe(
       "event-store-recovery-slot-loss-aug-2026",
     );
+    expect(() => recoverySlotName("a".repeat(42))).toThrow(
+      "at most 41 characters",
+    );
     expect(config).toMatchObject({
       "slot.drop.on.stop": "false",
       "slot.failover": "true",

@@ -87,6 +87,14 @@ function assertReplayId(replayId: string): void {
     );
 }
 
+function assertRecoveryId(recoveryId: string): void {
+  assertReplayId(recoveryId);
+  // `event_store_recovery_` plus the suffix must also satisfy the SQL
+  // ownership gate's 50-character suffix and PostgreSQL's 63-byte limit.
+  if (recoveryId.length > 41)
+    throw new Error("recoveryId must be at most 41 characters");
+}
+
 /** PostgreSQL replication-slot names have a 63-byte limit. */
 export function replaySlotName(replayId: string): string {
   assertReplayId(replayId);
@@ -100,12 +108,12 @@ export function replayTopicName(replayId: string): string {
 
 /** PostgreSQL replication-slot names have a 63-byte limit. */
 export function recoverySlotName(recoveryId: string): string {
-  assertReplayId(recoveryId);
+  assertRecoveryId(recoveryId);
   return `event_store_recovery_${recoveryId.replaceAll("-", "_")}`;
 }
 
 export function recoveryConnectorName(recoveryId: string): string {
-  assertReplayId(recoveryId);
+  assertRecoveryId(recoveryId);
   return `event-store-recovery-${recoveryId}`;
 }
 
@@ -545,7 +553,7 @@ export class RecoveryCutoverCoordinator {
       throw new Error("recovery projection Kafka lag is not zero");
     await Promise.all([
       this.assertConnectorDelivery(slotName, connectorName),
-      this.assertConsumerGroup(verification.consumerGroupId),
+      this.assertConsumerGroup(verification),
     ]);
     const client = await this.pool.connect();
     try {
@@ -615,22 +623,45 @@ export class RecoveryCutoverCoordinator {
       );
   }
 
-  private async assertConsumerGroup(consumerGroupId: string): Promise<void> {
+  private async assertConsumerGroup(
+    verification: RecoveryCutoverVerification,
+  ): Promise<void> {
+    const barriers = await this.pool.query<{
+      partition_no: number;
+      kafka_offset: string;
+    }>(
+      `SELECT i.partition_no,i.kafka_offset::text
+         FROM projection_runtime.inbox i
+         JOIN event_store.events e ON e.event_id=i.event_id
+        WHERE i.projection_name=$1 AND i.generation_id=$2
+          AND e.event_name='system.replaybarrier'
+          AND e.event_envelope->'payload'->>'replayId'=$3`,
+      [
+        verification.projectionName,
+        verification.generationId,
+        verification.replayId,
+      ],
+    );
+    if (barriers.rows.length !== kafkaPartitionCount)
+      throw new Error("recovery projection has not recorded every barrier");
     const kafka = new KafkaJS.Kafka({ kafkaJS: { brokers: this.brokers } });
     const admin = kafka.admin();
     await admin.connect();
     try {
       const offsets = await admin.fetchOffsets({
-        groupId: consumerGroupId,
+        groupId: verification.consumerGroupId,
         topics: ["event-store.events.v1"],
       });
       const partitions = offsets[0]?.partitions ?? [];
-      if (
-        partitions.length !== kafkaPartitionCount ||
-        partitions.some((partition) => BigInt(partition.offset) < 0n)
-      )
+      const committed = new Map(
+        partitions.map((partition) => [partition.partition, BigInt(partition.offset)]),
+      );
+      if (barriers.rows.some((barrier) => {
+        const offset = committed.get(barrier.partition_no);
+        return offset === undefined || offset <= BigInt(barrier.kafka_offset);
+      }))
         throw new Error(
-          "recovery projection consumer group lacks committed offsets",
+          "recovery projection consumer group has not committed every barrier",
         );
     } finally {
       await admin.disconnect();
@@ -755,7 +786,7 @@ export function recoveryConnectorConfig(
     dbname: string;
   },
 ): Record<string, string> {
-  assertReplayId(recoveryId);
+  assertRecoveryId(recoveryId);
   const prefix = recoveryConnectorName(recoveryId);
   return {
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
