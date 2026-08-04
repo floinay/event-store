@@ -131,10 +131,15 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     const slot = await database.query<{ exists: boolean }>(
       "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name='event_store_live') AS exists",
     );
-    if (!slot.rows[0]?.exists)
-      await database.query(
-        "SELECT pg_create_logical_replication_slot('event_store_live', 'pgoutput', false, false, true)",
-      );
+    if (!slot.rows[0]?.exists) {
+      try {
+        await database.query(
+          "SELECT pg_create_logical_replication_slot('event_store_live', 'pgoutput', false, false, true)",
+        );
+      } catch (error) {
+        if ((error as { code?: string }).code !== "42710") throw error;
+      }
+    }
   } finally {
     await database.end();
   }
