@@ -21,8 +21,9 @@ kubectl apply -f deploy/event-store/bootstrap-job.yaml
 derived UTC `timestamp without time zone` used only by Debezium's EventRouter.
 The default adaptive Debezium timestamp mapping supplies the Kafka record
 timestamp; `time.precision.mode=connect` is incompatible with EventRouter 3.6.
-The payload uses `StringConverter` with `expand.json.payload=false`, preserving
-the canonical JSON bytes rather than reserializing the envelope.
+`event_envelope_kafka` holds the canonical JSON text derived in the same append
+transaction. With `StringConverter` and `expand.json.payload=false`, Debezium
+publishes those canonical JSON bytes without reserializing the JSONB envelope.
 
 Before promoting a PostgreSQL standby, run
 `SELECT event_store.assert_failover_candidate('event_store_live')` on that

@@ -113,9 +113,10 @@ suite("Debezium CDC", () => {
         `EventRouter value: ${event.value}; headers: ${JSON.stringify(event.headers)}`,
       );
     expect(envelope.aggregateId).toBe(aggregateId);
-    expect(envelope).toEqual(
-      (await store.readStream("orders", "Order", aggregateId))[0],
-    );
+    const stored = (await store.readStream("orders", "Order", aggregateId))[0];
+    expect(stored).toBeDefined();
+    expect(event.value).toBe(canonicalJson(stored));
+    expect(envelope).toEqual(stored);
     expect(envelope.streamRevision).toBe("1");
     expect(envelope.eventName).toBe("order.created");
     expect(envelope.context.causationId).toBeNull();

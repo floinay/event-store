@@ -541,7 +541,7 @@ export function replayConnectorConfig(
     "transforms.outbox.table.field.event.id": "event_id",
     "transforms.outbox.table.field.event.key": "partition_key",
     "transforms.outbox.table.field.event.type": "event_name",
-    "transforms.outbox.table.field.event.payload": "event_envelope",
+    "transforms.outbox.table.field.event.payload": "event_envelope_kafka",
     "transforms.outbox.table.field.event.timestamp": "recorded_at_kafka",
     "transforms.outbox.route.by.field": "topic_route",
     "transforms.outbox.route.topic.replacement": replayTopicName(replayId),

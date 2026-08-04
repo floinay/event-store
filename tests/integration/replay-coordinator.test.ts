@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { uuidv7 } from "@event-store/contracts";
+import { canonicalJson, uuidv7 } from "@event-store/contracts";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import {
   KafkaProjectionRunner,
@@ -227,7 +227,8 @@ suite("replay coordinator", () => {
         let quiet: ReturnType<typeof setTimeout> | undefined;
         void consumer.run({
           eachMessage: async ({ message, partition }) => {
-            const event = JSON.parse(message.value?.toString() ?? "{}") as {
+            const value = message.value?.toString() ?? "";
+            const event = JSON.parse(value || "{}") as {
               eventId?: string;
             };
             const barrier =
@@ -235,6 +236,11 @@ suite("replay coordinator", () => {
                 ? undefined
                 : barrierByEventId.get(event.eventId);
             if (barrier !== undefined && !received.has(barrier.eventId)) {
+              const stored = await pool.query<{ event_envelope: unknown }>(
+                "SELECT event_envelope FROM event_store.events WHERE event_id=$1",
+                [barrier.eventId],
+              );
+              expect(value).toBe(canonicalJson(stored.rows[0]?.event_envelope));
               expect(partition).toBe(barrier.partition);
               await coordinator.recordBarrier(identity, {
                 topic: replayTopicName(identity.replayId),
