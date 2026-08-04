@@ -13,7 +13,6 @@ const suite = process.env.RUN_LATENCY === "true" ? describe : describe.skip;
 const sampleCount = Number(process.env.LATENCY_SAMPLE_COUNT ?? 100);
 const concurrency = Number(process.env.LATENCY_CONCURRENCY ?? 1);
 const durationMs = Number(process.env.LATENCY_DURATION_MS ?? 0);
-const maxClockSkewMs = Number(process.env.MAX_CLOCK_SKEW_MS ?? 2);
 const appendRate = Number(process.env.LATENCY_APPEND_RATE ?? 0);
 const batchSize = Number(process.env.LATENCY_BATCH_SIZE ?? 1);
 const payloadBytes = Number(process.env.LATENCY_PAYLOAD_BYTES ?? 128);
@@ -148,8 +147,6 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         throw new Error("LATENCY_CONCURRENCY must be a positive integer");
       if (!Number.isFinite(durationMs) || durationMs < 0)
         throw new Error("LATENCY_DURATION_MS must be a non-negative number");
-      if (!Number.isFinite(maxClockSkewMs) || maxClockSkewMs < 0)
-        throw new Error("MAX_CLOCK_SKEW_MS must be a non-negative number");
       if (!Number.isFinite(appendRate) || appendRate < 0)
         throw new Error("LATENCY_APPEND_RATE must be a non-negative number");
       positiveInteger("LATENCY_BATCH_SIZE", batchSize);
@@ -209,7 +206,6 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         topics: ["event-store.events.v1"],
         replace: true,
       });
-      const clockOffsetMs = await calibrateClockOffset(pool, maxClockSkewMs);
       let warmupEventId: string | undefined;
       let appendsFinished = false;
       let warmupObserved!: () => void;
@@ -331,10 +327,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       await samplesReceived;
       await consumer.disconnect();
       const samples = [...committed]
-        .map(
-          ([eventId, committedAt]) =>
-            observed.get(eventId)! - committedAt - clockOffsetMs,
-        )
+        .map(([eventId, committedAt]) => observed.get(eventId)! - committedAt)
         .sort((left, right) => left - right);
       const metrics = {
         samples: samples.length,
@@ -390,33 +383,6 @@ function allSamplesReceived(
         observed.has(requestId) && Number.isFinite(committed.get(requestId)),
     )
   );
-}
-
-async function calibrateClockOffset(
-  pool: Pool,
-  maxClockSkewMs: number,
-): Promise<number> {
-  const probes = await Promise.all(
-    Array.from({ length: 7 }, async () => {
-      const started = Date.now();
-      const result = await pool.query<{ epoch_ms: string }>(
-        "SELECT (extract(epoch FROM clock_timestamp()) * 1000)::text AS epoch_ms",
-      );
-      const finished = Date.now();
-      const databaseEpochMs = Number(result.rows[0]?.epoch_ms);
-      if (!Number.isFinite(databaseEpochMs))
-        throw new Error("PostgreSQL did not return a measurable wall clock");
-      return {
-        roundTripMs: finished - started,
-        offsetMs: (started + finished) / 2 - databaseEpochMs,
-      };
-    }),
-  );
-  const offsets = probes.map((probe) => probe.offsetMs).sort((a, b) => a - b);
-  const spread = offsets.at(-1)! - offsets[0]!;
-  expect(spread).toBeLessThanOrEqual(maxClockSkewMs * 2 + 2);
-  return probes.sort((left, right) => left.roundTripMs - right.roundTripMs)[0]!
-    .offsetMs;
 }
 
 function append(
