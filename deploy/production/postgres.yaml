@@ -1,0 +1,30 @@
+# Requires CloudNativePG 1.27+ with PostgreSQL 18 images available in the registry.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: event-store-postgres
+  labels:
+    app.kubernetes.io/part-of: event-store
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4
+  enableSuperuserAccess: false
+  minSyncReplicas: 1
+  maxSyncReplicas: 1
+  postgresql:
+    parameters:
+      max_replication_slots: "10"
+      max_wal_senders: "10"
+      max_slot_wal_keep_size: 8GB
+      synchronous_commit: "on"
+  replicationSlots:
+    highAvailability:
+      enabled: true
+      synchronizeLogicalDecoding: true
+    synchronizeReplicas:
+      enabled: true
+    updateInterval: 5
+  storage:
+    size: 200Gi
+  monitoring:
+    enablePodMonitor: true

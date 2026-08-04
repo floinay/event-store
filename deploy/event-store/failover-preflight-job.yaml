@@ -1,0 +1,27 @@
+# Set event-store-failover-candidate.database-url to the standby being promoted.
+# This Job is intentionally separate from promotion: a failed preflight must
+# leave the candidate unpromoted.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: event-store-failover-preflight
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verify-candidate
+          image: postgres:18.4-bookworm
+          command:
+            - sh
+            - -ec
+            - >-
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1
+              -c "SELECT event_store.assert_failover_candidate('event_store_live')"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: event-store-failover-candidate
+                  key: database-url
