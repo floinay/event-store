@@ -555,46 +555,81 @@ export function replayConnectorConfig(
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const action = process.env.REPLAY_ACTION;
   const replayId = process.env.REPLAY_ID;
-  const raw = process.env.REPLAY_DATABASE_JSON;
   const coordinatorDatabaseUrl = process.env.REPLAY_COORDINATOR_DATABASE_URL;
-  const appendDatabaseUrl = process.env.REPLAY_APPEND_DATABASE_URL;
   const connectorUrl = process.env.CONNECT_URL;
   const brokers = process.env.KAFKA_BROKERS?.split(",");
   const projectionName = process.env.REPLAY_PROJECTION_NAME;
   const generationId = process.env.REPLAY_GENERATION_ID;
   if (
+    (action !== "start" && action !== "activate") ||
     replayId === undefined ||
-    raw === undefined ||
     coordinatorDatabaseUrl === undefined ||
-    appendDatabaseUrl === undefined ||
     connectorUrl === undefined ||
     brokers === undefined ||
     projectionName === undefined ||
     generationId === undefined
   )
     throw new Error(
-      "REPLAY_ID, REPLAY_DATABASE_JSON, REPLAY_COORDINATOR_DATABASE_URL, REPLAY_APPEND_DATABASE_URL, CONNECT_URL, KAFKA_BROKERS, REPLAY_PROJECTION_NAME and REPLAY_GENERATION_ID are required",
+      "REPLAY_ACTION=start|activate, REPLAY_ID, REPLAY_COORDINATOR_DATABASE_URL, CONNECT_URL, KAFKA_BROKERS, REPLAY_PROJECTION_NAME and REPLAY_GENERATION_ID are required",
     );
-  const barriers = await startReplay({
-    identity: { replayId, projectionName, generationId },
-    coordinatorDatabaseUrl,
-    appendDatabaseUrl,
-    connectorUrl,
-    brokers,
-    connectorDatabase: JSON.parse(raw) as Parameters<
-      typeof replayConnectorConfig
-    >[1],
-  });
-  console.log(
-    JSON.stringify(
-      {
-        replayId,
-        generationId,
-        barriers,
-      },
-      null,
-      2,
-    ),
-  );
+  const identity = { replayId, projectionName, generationId };
+  if (action === "start") {
+    const raw = process.env.REPLAY_DATABASE_JSON;
+    const appendDatabaseUrl = process.env.REPLAY_APPEND_DATABASE_URL;
+    if (raw === undefined || appendDatabaseUrl === undefined)
+      throw new Error(
+        "REPLAY_DATABASE_JSON and REPLAY_APPEND_DATABASE_URL are required for REPLAY_ACTION=start",
+      );
+    const barriers = await startReplay({
+      identity,
+      coordinatorDatabaseUrl,
+      appendDatabaseUrl,
+      connectorUrl,
+      brokers,
+      connectorDatabase: JSON.parse(raw) as Parameters<
+        typeof replayConnectorConfig
+      >[1],
+    });
+    console.log(JSON.stringify({ action, ...identity, barriers }, null, 2));
+  } else {
+    const consumerGroupId = process.env.REPLAY_CONSUMER_GROUP_ID;
+    const kafkaLagText = process.env.REPLAY_KAFKA_LAG;
+    const expectedChecksum = process.env.REPLAY_EXPECTED_CHECKSUM;
+    const actualChecksum = process.env.REPLAY_ACTUAL_CHECKSUM;
+    if (
+      consumerGroupId === undefined ||
+      kafkaLagText === undefined ||
+      expectedChecksum === undefined ||
+      actualChecksum === undefined
+    )
+      throw new Error(
+        "REPLAY_CONSUMER_GROUP_ID, REPLAY_KAFKA_LAG, REPLAY_EXPECTED_CHECKSUM and REPLAY_ACTUAL_CHECKSUM are required for REPLAY_ACTION=activate",
+      );
+    let kafkaLag: bigint;
+    try {
+      kafkaLag = BigInt(kafkaLagText);
+    } catch {
+      throw new Error("REPLAY_KAFKA_LAG must be an integer");
+    }
+    const pool = new Pool({ connectionString: coordinatorDatabaseUrl });
+    const coordinator = new ReplayCoordinator(pool, connectorUrl, brokers);
+    try {
+      await coordinator.activate(identity, {
+        consumerGroupId,
+        kafkaLag: async () => kafkaLag,
+        checksums: async () => ({
+          expected: expectedChecksum,
+          actual: actualChecksum,
+        }),
+      });
+      await coordinator.teardown(identity);
+    } finally {
+      await pool.end();
+    }
+    console.log(
+      JSON.stringify({ action, ...identity, status: "active" }, null, 2),
+    );
+  }
 }
