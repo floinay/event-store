@@ -118,6 +118,49 @@ async function verifyCdcReadiness(
     );
 }
 
+export async function ensureCdcSlot(
+  database: Pick<Client, "query">,
+  connectorName: string,
+): Promise<void> {
+  const runtime = await database.query<{
+    cdc_slot_name: string;
+    cdc_connector_name: string;
+  }>(
+    "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
+  );
+  const cdcSlotName = runtime.rows[0]?.cdc_slot_name ?? "event_store_live";
+  const cdcConnectorName =
+    runtime.rows[0]?.cdc_connector_name ?? connectorName;
+  const adoptedRecovery =
+    cdcSlotName !== "event_store_live" || cdcConnectorName !== connectorName;
+  const slot = await database.query<{ exists: boolean }>(
+    "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name=$1) AS exists",
+    [cdcSlotName],
+  );
+  if (!slot.rows[0]?.exists && adoptedRecovery) {
+    throw new Error(
+      `adopted recovery slot ${cdcSlotName} is missing; refusing to replace it`,
+    );
+  }
+  if (slot.rows[0]?.exists) return;
+
+  const events = await database.query<{ exists: boolean }>(
+    "SELECT EXISTS(SELECT 1 FROM event_store.events) AS exists",
+  );
+  if (events.rows[0]?.exists)
+    throw new Error(
+      `live CDC slot ${cdcSlotName} is missing after events exist; refusing to create a new cursor without recovery`,
+    );
+  try {
+    await database.query(
+      "SELECT pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
+      [cdcSlotName],
+    );
+  } catch (error) {
+    if ((error as { code?: string }).code !== "42710") throw error;
+  }
+}
+
 export async function bootstrap(options: BootstrapOptions): Promise<void> {
   await migrate(
     options.migrationDatabaseUrl,
@@ -147,44 +190,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   });
   await database.connect();
   try {
-    const runtime = await database.query<{
-      cdc_slot_name: string;
-      cdc_connector_name: string;
-    }>(
-      "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
-    );
-    const cdcSlotName = runtime.rows[0]?.cdc_slot_name ?? "event_store_live";
-    const cdcConnectorName =
-      runtime.rows[0]?.cdc_connector_name ?? options.connectorName;
-    const adoptedRecovery =
-      cdcSlotName !== "event_store_live" ||
-      cdcConnectorName !== options.connectorName;
-    const slot = await database.query<{ exists: boolean }>(
-      "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name=$1) AS exists",
-      [cdcSlotName],
-    );
-    if (!slot.rows[0]?.exists && adoptedRecovery) {
-      throw new Error(
-        `adopted recovery slot ${cdcSlotName} is missing; refusing to replace it`,
-      );
-    }
-    if (!slot.rows[0]?.exists) {
-      const events = await database.query<{ exists: boolean }>(
-        "SELECT EXISTS(SELECT 1 FROM event_store.events) AS exists",
-      );
-      if (events.rows[0]?.exists)
-        throw new Error(
-          `live CDC slot ${cdcSlotName} is missing after events exist; refusing to create a new cursor without recovery`,
-        );
-      try {
-        await database.query(
-          "SELECT pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
-          [cdcSlotName],
-        );
-      } catch (error) {
-        if ((error as { code?: string }).code !== "42710") throw error;
-      }
-    }
+    await ensureCdcSlot(database, options.connectorName);
   } finally {
     await database.end();
   }
