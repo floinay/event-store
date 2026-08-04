@@ -11,6 +11,16 @@ import { migrate } from "@event-store/migrate";
 import { reconcile } from "@event-store/reconcile";
 import { PostgresEventStore } from "@event-store/postgres-store";
 import { canonicalJson, uuidv7 } from "@event-store/contracts";
+import {
+  createProjectionEventTransformer,
+  KafkaProjectionRunner,
+  ProjectionCheckpointStore,
+  ProjectionFailureReporter,
+  ProjectionPayloadSchemas,
+  ProjectionTransactionRunner,
+} from "@event-store/projection-runtime";
+import { UpcasterRegistry } from "@event-store/upcasting";
+import { z } from "zod";
 
 const suite = process.env.RUN_INTEGRATION === "true" ? describe : describe.skip;
 const image = "postgres:18.4-bookworm";
@@ -38,11 +48,15 @@ suite("PostgreSQL HA promotion", () => {
   let kafkaBroker: string;
   let connectUrl: string;
 
-  const waitForConnector = async (): Promise<void> => {
+  const waitForConnector = async (
+    connectorName = "event-store-live",
+  ): Promise<void> => {
+    let lastStatus = "unavailable";
     await eventually(async () => {
-      const status = (await fetch(
-        `${connectUrl}/connectors/event-store-live/status`,
-      ).then((response) => response.json())) as {
+      lastStatus = await fetch(
+        `${connectUrl}/connectors/${connectorName}/status`,
+      ).then((response) => response.text());
+      const status = JSON.parse(lastStatus) as {
         connector?: { state?: string };
         tasks?: { state?: string }[];
       };
@@ -51,14 +65,19 @@ suite("PostgreSQL HA promotion", () => {
         status.tasks?.length === 1 &&
         status.tasks[0]?.state === "RUNNING"
       );
+    }).catch((error) => {
+      throw new Error(`${String(error)}; connector status: ${lastStatus}`);
     });
   };
 
   const configureConnector = async (
     databaseHostname: string,
+    connectorName = "event-store-live",
+    topicPrefix = connectorName,
+    snapshotMode = "no_data",
   ): Promise<void> => {
     const response = await fetch(
-      `${connectUrl}/connectors/event-store-live/config`,
+      `${connectUrl}/connectors/${connectorName}/config`,
       {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -71,7 +90,7 @@ suite("PostgreSQL HA promotion", () => {
           "database.user": "event_store_cdc",
           "database.password": "cdc",
           "database.dbname": "event_store",
-          "topic.prefix": "event-store-live",
+          "topic.prefix": topicPrefix,
           "plugin.name": "pgoutput",
           "publication.name": "event_store_events",
           "publication.autocreate.mode": "disabled",
@@ -80,7 +99,10 @@ suite("PostgreSQL HA promotion", () => {
           "slot.failover": "true",
           "schema.include.list": "event_store",
           "table.include.list": "event_store.events",
-          "snapshot.mode": "no_data",
+          "snapshot.mode": snapshotMode,
+          "snapshot.select.statement.overrides": "event_store.events",
+          "snapshot.select.statement.overrides.event_store.events":
+            "SELECT * FROM event_store.events ORDER BY event_number",
           "poll.interval.ms": "2",
           "max.batch.size": "2048",
           "max.queue.size": "8192",
@@ -92,8 +114,7 @@ suite("PostgreSQL HA promotion", () => {
           predicates: "isCanonicalEvents",
           "predicates.isCanonicalEvents.type":
             "org.apache.kafka.connect.transforms.predicates.TopicNameMatches",
-          "predicates.isCanonicalEvents.pattern":
-            "event-store-live\\.event_store\\.events",
+          "predicates.isCanonicalEvents.pattern": `${topicPrefix}\\.event_store\\.events`,
           transforms: "outbox",
           "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
           "transforms.outbox.predicate": "isCanonicalEvents",
@@ -115,7 +136,7 @@ suite("PostgreSQL HA promotion", () => {
     );
     if (!response.ok)
       throw new Error(`connector creation failed: ${await response.text()}`);
-    await waitForConnector();
+    await waitForConnector(connectorName);
   };
 
   beforeAll(async () => {
@@ -337,6 +358,8 @@ suite("PostgreSQL HA promotion", () => {
       afterPromotionRequestId,
     ]);
     const receivedRequestIds = new Set<string>();
+    let projectionConsumer: KafkaJS.Consumer | undefined;
+    let projectionPool: Pool | undefined;
     const consumer = new KafkaJS.Kafka({
       kafkaJS: { brokers: [kafkaBroker] },
     }).consumer({
@@ -361,7 +384,7 @@ suite("PostgreSQL HA promotion", () => {
     const deliveryTimeout = setTimeout(
       () =>
         rejected(new Error("CDC did not deliver every failover-window event")),
-      60_000,
+      180_000,
     );
     await consumer.run({
       eachMessage: async ({ message }) => {
@@ -446,26 +469,90 @@ suite("PostgreSQL HA promotion", () => {
         }
       });
       expect(Date.now() - promotionStartedAt).toBeLessThanOrEqual(60_000);
-      await configureConnector("ha-standby");
-      await expect(
-        appendProbe(standbyUrl, afterPromotionRequestId, "after-promotion"),
-      ).rejects.toMatchObject({ code: "P0001" });
-      const promotedAdmission = new Pool({ connectionString: standbyUrl });
+      const retiredConnector = await fetch(
+        `${connectUrl}/connectors/event-store-live`,
+        { method: "DELETE" },
+      );
+      expect(retiredConnector.ok || retiredConnector.status === 404).toBe(true);
+      const projectionName = "ha-promotion-reconciliation";
+      const generationId = uuidv7();
+      const generationPool = new Pool({ connectionString: standbyUrl });
       try {
-        const projectionName = "ha-promotion-reconciliation";
-        const generationId = uuidv7();
-        await promotedAdmission.query(
+        await generationPool.query(
           `INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at)
            VALUES ($1,$2,'active',clock_timestamp())`,
           [projectionName, generationId],
         );
-        await promotedAdmission.query(
-          `INSERT INTO projection_runtime.inbox(
-             projection_name,generation_id,event_id,envelope_sha256,topic_name,partition_no,kafka_offset,processed_at
-           )
-           SELECT $1,$2,event_id,envelope_sha256,'event-store.events.v1',0,event_number,clock_timestamp()
-             FROM event_store.events`,
+      } finally {
+        await generationPool.end();
+      }
+      const upcasters = new UpcasterRegistry();
+      upcasters.setCurrentVersion("ha.appended", 1);
+      const schemas = new ProjectionPayloadSchemas();
+      schemas.register(
+        "ha.appended",
+        1,
+        z.object({ phase: z.string() }).strict(),
+      );
+      projectionPool = new Pool({ connectionString: standbyUrl });
+      projectionConsumer = await new KafkaProjectionRunner(
+        {
+          brokers: [kafkaBroker],
+          groupId: `ha-promotion-reconciliation-${uuidv7()}`,
+          topic: "event-store.events.v1",
+        },
+        new ProjectionTransactionRunner(
+          projectionPool,
+          { name: projectionName, generationId },
+          createProjectionEventTransformer(upcasters, schemas),
+        ),
+        async () => undefined,
+        new ProjectionCheckpointStore(projectionPool, {
+          name: projectionName,
+          generationId,
+        }),
+        new ProjectionFailureReporter(projectionPool, {
+          name: projectionName,
+          generationId,
+        }),
+      ).start();
+      await eventually(async () => {
+        const missing = await projectionPool!.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM event_store.events e
+           WHERE NOT EXISTS (
+             SELECT 1 FROM projection_runtime.inbox i
+              WHERE i.projection_name=$1 AND i.generation_id=$2 AND i.event_id=e.event_id
+           )`,
           [projectionName, generationId],
+        );
+        return missing.rows[0]?.count === 0;
+      });
+      const recoveryConnectorName = "event-store-ha-recovery";
+      await configureConnector(
+        "ha-standby",
+        recoveryConnectorName,
+        recoveryConnectorName,
+        "initial",
+      );
+      await expect(
+        appendProbe(standbyUrl, afterPromotionRequestId, "after-promotion"),
+      ).rejects.toMatchObject({ code: "P0001" });
+      await eventually(async () => {
+        const readiness = new Pool({ connectionString: standbyUrl });
+        try {
+          const slot = await readiness.query<{ active: boolean }>(
+            "SELECT active FROM pg_replication_slots WHERE slot_name='event_store_live'",
+          );
+          return slot.rows[0]?.active === true;
+        } finally {
+          await readiness.end();
+        }
+      });
+      const promotedAdmission = new Pool({ connectionString: standbyUrl });
+      try {
+        await promotedAdmission.query(
+          "UPDATE event_store.runtime_config SET cdc_connector_name=$1 WHERE singleton",
+          [recoveryConnectorName],
         );
         await promotedAdmission.query(
           "SELECT event_store.record_cdc_timeline_reconciliation($1,$2,event_store.current_timeline_id())",
@@ -479,6 +566,17 @@ suite("PostgreSQL HA promotion", () => {
       }
       await appendProbe(standbyUrl, afterPromotionRequestId, "after-promotion");
       await allDelivered;
+      await eventually(async () => {
+        const missing = await projectionPool!.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM event_store.events e
+           WHERE NOT EXISTS (
+             SELECT 1 FROM projection_runtime.inbox i
+              WHERE i.projection_name=$1 AND i.generation_id=$2 AND i.event_id=e.event_id
+           )`,
+          [projectionName, generationId],
+        );
+        return missing.rows[0]?.count === 0;
+      });
       await expect(reconcile(standbyUrl)).resolves.toMatchObject({
         count: "2",
         revisionGaps: "0",
@@ -500,7 +598,7 @@ suite("PostgreSQL HA promotion", () => {
         });
         await expect(
           promoted.query(
-            "SELECT event_store.assert_failover_candidate('event_store_live')",
+            "SELECT event_store.assert_recovery_cdc_slot_ready('event_store_live')",
           ),
         ).resolves.toBeDefined();
       } finally {
@@ -508,6 +606,8 @@ suite("PostgreSQL HA promotion", () => {
       }
     } finally {
       clearTimeout(deliveryTimeout);
+      await projectionConsumer?.disconnect().catch(() => undefined);
+      await projectionPool?.end().catch(() => undefined);
       await consumer.disconnect().catch(() => undefined);
     }
   }, 90_000);
