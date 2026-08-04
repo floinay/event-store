@@ -25,9 +25,11 @@ timestamp; `time.precision.mode=connect` is incompatible with EventRouter 3.6.
 transaction. With `StringConverter` and `expand.json.payload=false`, Debezium
 publishes those canonical JSON bytes without reserializing the JSONB envelope.
 
-Before promoting a PostgreSQL standby, run
-`SELECT event_store.assert_configured_failover_candidate()` on that
-candidate. Promotion is prohibited unless the slot is present, failover-enabled,
-non-temporary, valid, and `synced=true`. After promotion, redirect the primary
-Service and Connect, verify the slot identity/LSN, reconcile event IDs around
-the promotion window, then reopen append traffic.
+Before a planned promotion, run
+`SELECT event_store.assert_configured_failover_candidate()` on the selected
+candidate. A synchronized slot lets Debezium resume without recovery. CNPG may
+automatically promote after an unplanned failure; then append admission must
+remain fail-closed until the configured slot, Connect, and Kafka delivery are
+healthy. If the slot is absent, invalid, or cannot resume from its durable
+offset, run slot-loss recovery and reconcile all `event_id` values before
+reopening append traffic.

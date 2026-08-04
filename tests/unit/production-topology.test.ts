@@ -14,6 +14,7 @@ describe("production HA topology", () => {
       compose,
       monitoring,
       postgresMetrics,
+      runbook,
     ] = await Promise.all(
       ["postgres.yaml", "kafka.yaml", "runtime.yaml"]
         .map((file) => readFile(`deploy/production/${file}`, "utf8"))
@@ -25,6 +26,7 @@ describe("production HA topology", () => {
           readFile("deploy/docker-compose.yml", "utf8"),
           readFile("deploy/production/monitoring.yaml", "utf8"),
           readFile("deploy/production/postgres-metrics.yaml", "utf8"),
+          readFile("deploy/production/README.md", "utf8"),
         ]),
     );
     expect(postgres).toContain("instances: 3");
@@ -77,6 +79,9 @@ describe("production HA topology", () => {
     expect(runtime).toContain("name: connect");
     expect(runtime).toContain('limits: { cpu: "2", memory: 4Gi }');
     expect(preflight).toContain("assert_configured_failover_candidate()");
+    expect(runbook).toContain("CNPG may\nautomatically promote");
+    expect(runbook).toContain("slot-loss recovery");
+    expect(runbook).toContain("reconcile all `event_id` values");
     expect(bootstrap).toContain("event-store-kafka-kafka-bootstrap:9092");
     expect(bootstrap).toContain("http://event-store-connect:8083");
     expect(connector).toContain(
