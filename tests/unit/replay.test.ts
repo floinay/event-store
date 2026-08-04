@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { replayConnectorConfig, replayTopicName } from "@event-store/replay";
+import {
+  replayConnectorConfig,
+  replaySlotName,
+  replayTopicName,
+} from "@event-store/replay";
 import { readFile } from "node:fs/promises";
 
 describe("replay connector", () => {
@@ -32,6 +36,14 @@ describe("replay connector", () => {
 describe("replay topic", () => {
   it("uses the stable, per-replay route topic name", () => {
     expect(replayTopicName("aug-2026")).toBe("event-store.replay.aug-2026.v1");
+  });
+
+  it("bounds the replay ID to a valid PostgreSQL replication-slot name", () => {
+    const replayId = "a".repeat(44);
+    expect(replaySlotName(replayId)).toHaveLength(63);
+    expect(() => replayTopicName("a".repeat(45))).toThrow(
+      "at most 44 characters",
+    );
   });
 });
 

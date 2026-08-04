@@ -24,6 +24,17 @@ export interface ReplayVerification {
   checksums: () => Promise<{ expected: string; actual: string }>;
 }
 
+/**
+ * Implemented by the replay projection runtime, not by the operator shell.
+ * It supplies the runtime's readable lag and independently-derived model
+ * checksums to the activation command.
+ */
+export interface ReplayVerificationModule {
+  createReplayVerification: (
+    identity: ReplayIdentity,
+  ) => Promise<ReplayVerification> | ReplayVerification;
+}
+
 export interface ReplayBarrier {
   partition: number;
   aggregateId: string;
@@ -49,10 +60,23 @@ export interface ReplayStartOptions {
 }
 
 const kafkaPartitionCount = 24;
+const maxReplayIdLength = 44;
+
+function assertReplayId(replayId: string): void {
+  if (!new RegExp(`^[a-z0-9-]{1,${maxReplayIdLength}}$`).test(replayId))
+    throw new Error(
+      `replayId must be lowercase alphanumeric/hyphen and at most ${maxReplayIdLength} characters`,
+    );
+}
+
+/** PostgreSQL replication-slot names have a 63-byte limit. */
+export function replaySlotName(replayId: string): string {
+  assertReplayId(replayId);
+  return `event_store_replay_${replayId.replaceAll("-", "_")}`;
+}
 
 export function replayTopicName(replayId: string): string {
-  if (!/^[a-z0-9-]{1,63}$/.test(replayId))
-    throw new Error("replayId must be lowercase alphanumeric/hyphen");
+  assertReplayId(replayId);
   return `event-store.replay.${replayId}.v1`;
 }
 
@@ -185,8 +209,7 @@ export async function appendReplayBarriers(
   store: PostgresEventStore,
   replayId: string,
 ): Promise<ReplayBarrier[]> {
-  if (!/^[a-z0-9-]{1,63}$/.test(replayId))
-    throw new Error("replayId must be lowercase alphanumeric/hyphen");
+  assertReplayId(replayId);
   const barriers: ReplayBarrier[] = [];
   for (let partition = 0; partition < kafkaPartitionCount; partition += 1) {
     const aggregateId = barrierAggregateId(replayId, partition);
@@ -244,7 +267,7 @@ export class ReplayCoordinator {
       throw new Error(
         `replay connector deployment failed: ${await response.text()}`,
       );
-    const slotName = `event_store_replay_${identity.replayId.replaceAll("-", "_")}`;
+    const slotName = replaySlotName(identity.replayId);
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       const [status, slot] = await Promise.all([
@@ -443,7 +466,7 @@ export class ReplayCoordinator {
   }
 
   async teardown(identity: ReplayIdentity): Promise<void> {
-    const slotName = `event_store_replay_${identity.replayId.replaceAll("-", "_")}`;
+    const slotName = replaySlotName(identity.replayId);
     const response = await fetch(
       `${this.connectorUrl}/connectors/event-store-replay-${identity.replayId}`,
       { method: "DELETE" },
@@ -514,8 +537,7 @@ export function replayConnectorConfig(
     dbname: string;
   },
 ): Record<string, string> {
-  if (!/^[a-z0-9-]{1,63}$/.test(replayId))
-    throw new Error("replayId must be lowercase alphanumeric/hyphen");
+  assertReplayId(replayId);
   return {
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
     "tasks.max": "1",
@@ -528,7 +550,7 @@ export function replayConnectorConfig(
     "plugin.name": "pgoutput",
     "publication.name": "event_store_events",
     "publication.autocreate.mode": "disabled",
-    "slot.name": `event_store_replay_${replayId.replaceAll("-", "_")}`,
+    "slot.name": replaySlotName(replayId),
     "slot.drop.on.stop": "false",
     "schema.include.list": "event_store",
     "table.include.list": "event_store.events",
@@ -552,6 +574,30 @@ export function replayConnectorConfig(
     "transforms.outbox.table.fields.additional.placement":
       "event_id:header:id,event_name:header:type,envelope_sha256:header:envelopeHash,namespace:header:namespace,aggregate_type:header:aggregateType,stream_revision:header:streamRevision",
   };
+}
+
+export async function loadReplayVerification(
+  moduleSpecifier: string,
+  identity: ReplayIdentity,
+): Promise<ReplayVerification> {
+  const module = (await import(
+    moduleSpecifier
+  )) as Partial<ReplayVerificationModule>;
+  if (typeof module.createReplayVerification !== "function")
+    throw new Error(
+      "REPLAY_VERIFICATION_MODULE must export createReplayVerification(identity)",
+    );
+  const verification = await module.createReplayVerification(identity);
+  if (
+    typeof verification.consumerGroupId !== "string" ||
+    verification.consumerGroupId.length === 0 ||
+    typeof verification.kafkaLag !== "function" ||
+    typeof verification.checksums !== "function"
+  )
+    throw new Error(
+      "createReplayVerification(identity) returned an invalid replay verification adapter",
+    );
+  return verification;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -594,36 +640,18 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     });
     console.log(JSON.stringify({ action, ...identity, barriers }, null, 2));
   } else {
-    const consumerGroupId = process.env.REPLAY_CONSUMER_GROUP_ID;
-    const kafkaLagText = process.env.REPLAY_KAFKA_LAG;
-    const expectedChecksum = process.env.REPLAY_EXPECTED_CHECKSUM;
-    const actualChecksum = process.env.REPLAY_ACTUAL_CHECKSUM;
-    if (
-      consumerGroupId === undefined ||
-      kafkaLagText === undefined ||
-      expectedChecksum === undefined ||
-      actualChecksum === undefined
-    )
+    const verificationModule = process.env.REPLAY_VERIFICATION_MODULE;
+    if (verificationModule === undefined)
       throw new Error(
-        "REPLAY_CONSUMER_GROUP_ID, REPLAY_KAFKA_LAG, REPLAY_EXPECTED_CHECKSUM and REPLAY_ACTUAL_CHECKSUM are required for REPLAY_ACTION=activate",
+        "REPLAY_VERIFICATION_MODULE is required for REPLAY_ACTION=activate",
       );
-    let kafkaLag: bigint;
-    try {
-      kafkaLag = BigInt(kafkaLagText);
-    } catch {
-      throw new Error("REPLAY_KAFKA_LAG must be an integer");
-    }
     const pool = new Pool({ connectionString: coordinatorDatabaseUrl });
     const coordinator = new ReplayCoordinator(pool, connectorUrl, brokers);
     try {
-      await coordinator.activate(identity, {
-        consumerGroupId,
-        kafkaLag: async () => kafkaLag,
-        checksums: async () => ({
-          expected: expectedChecksum,
-          actual: actualChecksum,
-        }),
-      });
+      await coordinator.activate(
+        identity,
+        await loadReplayVerification(verificationModule, identity),
+      );
       await coordinator.teardown(identity);
     } finally {
       await pool.end();
