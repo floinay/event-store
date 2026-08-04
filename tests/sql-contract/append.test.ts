@@ -165,6 +165,61 @@ suite("append SQL contract", () => {
     });
   });
 
+  it("makes snapshots idempotent and rejects a conflicting state hash", async () => {
+    const aggregateId = id();
+    for (let batch = 0; batch < 10; batch += 1) {
+      const input = appendInput(
+        aggregateId,
+        id(),
+        Array.from({ length: 100 }, (_, index) => ({
+          sequence: String(batch * 100 + index),
+        })),
+      );
+      if (batch > 0)
+        input.expectedRevision = {
+          kind: "exact",
+          revision: BigInt(batch * 100),
+        };
+      await store.append(input);
+    }
+    const reducerVersion = createHash("sha256")
+      .update("orders-v1")
+      .digest("hex");
+    const state = { applied: 1_000 };
+    const snapshot = {
+      namespace: "orders",
+      aggregateType: "Order",
+      aggregateId,
+      revision: 1_000n,
+      reducerVersion,
+      stateSchemaVersion: 1,
+      state,
+    };
+    await store.putSnapshot(snapshot);
+    await store.putSnapshot(snapshot);
+    await expect(
+      pool.query(
+        "SELECT event_store.put_snapshot_v1($1,$2,$3,$4,$5,$6,$7::jsonb,$8)",
+        [
+          "orders",
+          "Order",
+          aggregateId,
+          "1000",
+          reducerVersion,
+          1,
+          JSON.stringify(state),
+          Buffer.alloc(32, 1),
+        ],
+      ),
+    ).rejects.toMatchObject({ code: "XX001" });
+    await expect(
+      pool.query(
+        "SELECT count(*)::int AS count FROM event_store.snapshots WHERE namespace='orders' AND aggregate_type='Order' AND aggregate_id=$1",
+        [aggregateId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+  });
+
   it("rejects a changed body for an already acknowledged requestId", async () => {
     const aggregateId = id();
     const requestId = id();
