@@ -339,6 +339,100 @@ EOF
     throw new Error("connector did not become RUNNING");
   }
 
+  async createSnapshotRecoveryConnector(
+    recoveryId: string,
+    slotName: string,
+  ): Promise<string> {
+    if (!/^[a-z0-9-]{1,63}$/.test(recoveryId))
+      throw new Error("recoveryId must be lowercase alphanumeric/hyphen");
+    if (!/^event_store_[a-z0-9_]{1,50}$/.test(slotName))
+      throw new Error("slotName must be an event_store logical slot");
+    const name = `event-store-recovery-${recoveryId}`;
+    const response = await fetch(`${this.connectUrl}/connectors/${name}/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "database.hostname": "postgres",
+        "database.port": "5432",
+        "database.user": "event_store_cdc",
+        "database.password": "cdc",
+        "database.dbname": "event_store",
+        "topic.prefix": `event-store-recovery-${recoveryId}`,
+        "plugin.name": "pgoutput",
+        "publication.name": "event_store_events",
+        "publication.autocreate.mode": "disabled",
+        "slot.name": slotName,
+        "slot.drop.on.stop": "false",
+        "slot.failover": "true",
+        "schema.include.list": "event_store",
+        "table.include.list": "event_store.events",
+        "snapshot.mode": "initial",
+        "poll.interval.ms": "5",
+        "max.batch.size": "2048",
+        "max.queue.size": "8192",
+        "lsn.flush.mode": "connector",
+        "offset.mismatch.strategy": "trust_offset",
+        "exactly.once.support": "required",
+        "transaction.boundary": "poll",
+        "errors.tolerance": "none",
+        predicates: "isCanonicalEvents",
+        "predicates.isCanonicalEvents.type":
+          "org.apache.kafka.connect.transforms.predicates.TopicNameMatches",
+        "predicates.isCanonicalEvents.pattern":
+          `event-store-recovery-${recoveryId}\\.event_store\\.events`,
+        transforms: "outbox",
+        "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+        "transforms.outbox.predicate": "isCanonicalEvents",
+        "transforms.outbox.table.field.event.id": "event_id",
+        "transforms.outbox.table.field.event.key": "partition_key",
+        "transforms.outbox.table.field.event.type": "event_name",
+        "transforms.outbox.table.field.event.payload": "event_envelope",
+        "transforms.outbox.route.by.field": "topic_route",
+        "transforms.outbox.route.topic.regex": "(.*)",
+        "transforms.outbox.route.topic.replacement": "$1.events.v1",
+        "transforms.outbox.table.expand.json.payload": "false",
+        "transforms.outbox.table.op.invalid.behavior": "fatal",
+        "transforms.outbox.table.fields.additional.placement":
+          "event_id:header:id,event_name:header:type,envelope_sha256:header:envelopeHash,namespace:header:namespace,aggregate_type:header:aggregateType,stream_revision:header:streamRevision",
+      }),
+    });
+    if (!response.ok)
+      throw new Error(`recovery connector creation failed: ${await response.text()}`);
+    await this.waitForConnector(name);
+    return name;
+  }
+
+  async deleteConnector(name: string): Promise<void> {
+    const response = await fetch(`${this.connectUrl}/connectors/${name}`, {
+      method: "DELETE",
+    });
+    if (!response.ok && response.status !== 404)
+      throw new Error(`connector deletion failed: ${await response.text()}`);
+  }
+
+  async waitForConnector(name: string): Promise<void> {
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const response = await fetch(`${this.connectUrl}/connectors/${name}/status`);
+      if (response.ok) {
+        const status = (await response.json()) as {
+          connector?: { state?: string };
+          tasks?: { state?: string }[];
+        };
+        if (
+          status.connector?.state === "RUNNING" &&
+          status.tasks?.length === 1 &&
+          status.tasks[0]?.state === "RUNNING"
+        )
+          return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(`connector ${name} did not become RUNNING`);
+  }
+
   kafkaBroker(): string {
     if (this.#kafka === undefined) throw new Error("CDC stack is not started");
     return `${this.#kafka.getHost()}:${this.#kafka.getMappedPort(9092)}`;
