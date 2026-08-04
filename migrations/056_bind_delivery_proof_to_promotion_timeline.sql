@@ -19,6 +19,7 @@ RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, event_store
+AS $$
 DECLARE v_wal_budget_bytes bigint;
 BEGIN
   IF p_timeline_id IS DISTINCT FROM event_store.current_timeline_id() THEN
