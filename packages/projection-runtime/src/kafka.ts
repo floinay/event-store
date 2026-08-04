@@ -87,16 +87,13 @@ export class KafkaProjectionRunner {
       kafkaJS: { brokers: this.config.brokers },
     });
     const consumer = kafka.consumer({
+      // No group offset must choose an implicit earliest/latest position.
+      // `alignAssignment()` commits and seeks the durable PostgreSQL
+      // checkpoint before it resolves the eachBatch gate.
+      "auto.offset.reset": "error",
       kafkaJS: {
         groupId: this.config.groupId,
         autoCommit: false,
-        // The Confluent compatibility adapter attempts its automatic reset
-        // before `assignment()` becomes observable, so it cannot express
-        // `auto.offset.reset=error` while this runner performs a manual seek.
-        // Earliest is safe: the assignment gate below prevents any record from
-        // reaching a handler until the durable PostgreSQL checkpoint has set
-        // the exact position. It can replay duplicates, but can never skip.
-        fromBeginning: true,
         readUncommitted: false,
         allowAutoTopicCreation: false,
         minBytes: 1,
@@ -114,6 +111,73 @@ export class KafkaProjectionRunner {
     const admin = kafka.admin();
     await producer.connect();
     await admin.connect();
+    // librdkafka applies auto.offset.reset before the normal consumer exposes
+    // its assignment. Bootstrap the group once without invoking a projection
+    // handler, committing the database checkpoint for every partition. The
+    // actual consumer below can therefore fail closed on any later missing or
+    // out-of-range group offset.
+    const bootstrap = kafka.consumer({
+      "auto.offset.reset": "earliest",
+      kafkaJS: {
+        groupId: this.config.groupId,
+        autoCommit: false,
+        fromBeginning: true,
+        readUncommitted: false,
+        allowAutoTopicCreation: false,
+        sessionTimeout: 30_000,
+        heartbeatInterval: 3_000,
+        partitionAssignors: this.config.partitionAssignors ?? [
+          KafkaJS.PartitionAssignors.cooperativeSticky,
+        ],
+      },
+    });
+    try {
+      await bootstrap.connect();
+      await bootstrap.subscribe({ topics: [this.config.topic], replace: true });
+      await bootstrap.run({
+        eachBatchAutoResolve: false,
+        eachBatch: async () => undefined,
+      });
+      const bootstrapDeadline = Date.now() + 30_000;
+      while (bootstrap.assignment().length === 0) {
+        if (Date.now() >= bootstrapDeadline)
+          throw new Error(
+            "Kafka bootstrap consumer did not receive a partition assignment",
+          );
+        await wait(20);
+      }
+      const topicOffsets = await admin.fetchTopicOffsets(this.config.topic, {
+        isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
+      });
+      await Promise.all(
+        bootstrap
+          .assignment()
+          .filter((assignment) => assignment.topic === this.config.topic)
+          .map(async (assignment) => {
+            const low = topicOffsets.find(
+              (offset) => offset.partition === assignment.partition,
+            )?.low;
+            if (low === undefined)
+              throw new Error(
+                `Kafka low watermark is unavailable for ${assignment.topic}/${assignment.partition}`,
+              );
+            const expected = await this.checkpointStore.ensureAtLowWatermark(
+              assignment.topic,
+              assignment.partition,
+              BigInt(low),
+            );
+            await bootstrap.commitOffsets([
+              {
+                topic: assignment.topic,
+                partition: assignment.partition,
+                offset: expected.toString(),
+              },
+            ]);
+          }),
+      );
+    } finally {
+      await bootstrap.disconnect().catch(() => undefined);
+    }
     await consumer.connect();
     await consumer.subscribe({ topics: [this.config.topic], replace: true });
     let resolveAssigned!: () => void;
