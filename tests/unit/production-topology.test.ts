@@ -37,6 +37,9 @@ describe("production HA topology", () => {
     expect(postgres).toContain("synchronizeLogicalDecoding: true");
     expect(postgres).toContain("synchronizeReplicas:");
     expect(postgres).toContain('retentionPolicy: "35d"');
+    expect(postgres).toContain("walStorage:");
+    expect(postgres).toContain("size: 50Gi");
+    expect(postgres).toContain('requests: { cpu: "2", memory: 8Gi }');
     expect(postgres).toContain("kind: ScheduledBackup");
     expect(postgres).toContain('schedule: "0 0 0 * * *"');
     expect(kafka).toContain("replicas: 3");
@@ -63,6 +66,8 @@ describe("production HA topology", () => {
     expect(runtime).toContain("CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR");
     expect(runtime).toContain("CONNECT_CONSUMER_ISOLATION_LEVEL");
     expect(runtime).toContain("CONNECT_PRODUCER_COMPRESSION_TYPE");
+    expect(runtime).toContain("name: connect");
+    expect(runtime).toContain('requests: { cpu: "2", memory: 4Gi }');
     expect(preflight).toContain(
       "assert_failover_candidate('event_store_live')",
     );

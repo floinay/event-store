@@ -20,6 +20,7 @@ jobs:
       - run: >-
           RUN_INTEGRATION=true npx vitest run --no-file-parallelism
           tests/integration/slot-loss-recovery.test.ts
+          tests/integration/replay-coordinator.test.ts
           tests/integration/pitr-recovery.test.ts
           tests/integration/postgres-ha-promotion.test.ts
           tests/integration/projection-transaction.test.ts
@@ -47,13 +48,20 @@ jobs:
   weekly-soak:
     if: github.event.schedule == '0 1 * * 0'
     runs-on: ubuntu-24.04
-    timeout-minutes: 400
+    timeout-minutes: 450
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 24.18.0, cache: npm }
       - run: npm ci
       - run: npm run build
+      - run: >-
+          RUN_INTEGRATION=true npx vitest run --no-file-parallelism
+          tests/integration/replay-coordinator.test.ts
+          tests/integration/connect-kafka-recovery.test.ts
+          tests/integration/pitr-recovery.test.ts
+          tests/integration/reconcile.test.ts
+          --reporter=json --outputFile=reliability-weekly-recovery.json
       - run: >-
           RUN_LATENCY=true RUN_RELEASE_LATENCY=true
           LATENCY_DURATION_MS=21600000 LATENCY_SAMPLE_COUNT=100
@@ -66,7 +74,9 @@ jobs:
         if: always()
         with:
           name: cdc-weekly-soak
-          path: cdc-weekly-soak.json
+          path: |
+            cdc-weekly-soak.json
+            reliability-weekly-recovery.json
           retention-days: 35
 
   nightly-load-profiles:

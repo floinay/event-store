@@ -22,6 +22,10 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test:unit
+      - run: >-
+          RUN_INTEGRATION=true npx vitest run --no-file-parallelism
+          tests/integration/cdc.test.ts
+          -t 'publishes the committed canonical envelope only after append'
 
   pr-full:
     if: github.event_name == 'pull_request'
@@ -32,7 +36,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24.18.0, cache: npm }
       - run: npm ci
-      - run: npm run test:integration
+      - run: RUN_INTEGRATION=true RUN_STRESS=true npm test
 
   stress:
     runs-on: ubuntu-24.04

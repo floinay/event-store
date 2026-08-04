@@ -44,6 +44,11 @@ spec:
         compression: gzip
   storage:
     size: 200Gi
+  walStorage:
+    size: 50Gi
+  resources:
+    requests: { cpu: "2", memory: 8Gi }
+    limits: { cpu: "4", memory: 16Gi }
   monitoring:
     enablePodMonitor: true
     customQueriesConfigMap:

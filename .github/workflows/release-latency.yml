@@ -6,7 +6,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  release-gates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24.18.0, cache: npm }
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: RUN_INTEGRATION=true RUN_STRESS=true npm test
+      - run: >-
+          RUN_INTEGRATION=true npx vitest run --no-file-parallelism
+          tests/integration/migrate-role-passwords.test.ts
+          --reporter=json --outputFile=release-migration.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-gates
+          path: release-migration.json
+          retention-days: 365
+
   cdc-latency:
+    needs: release-gates
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
