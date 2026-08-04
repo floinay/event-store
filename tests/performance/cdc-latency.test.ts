@@ -179,9 +179,10 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
           "LATENCY_FAULT must be none, connect_restart, or kafka_restart",
         );
       if (
-        !Number.isInteger(latencyFaultAtMs) ||
-        latencyFaultAtMs < 0 ||
-        latencyFaultAtMs >= durationMs
+        latencyFault !== "none" &&
+        (!Number.isInteger(latencyFaultAtMs) ||
+          latencyFaultAtMs < 0 ||
+          latencyFaultAtMs >= durationMs)
       )
         throw new Error(
           "LATENCY_FAULT_AT_MS must be a non-negative integer before the test end",
