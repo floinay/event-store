@@ -447,6 +447,17 @@ suite("PostgreSQL HA promotion", () => {
       });
       expect(Date.now() - promotionStartedAt).toBeLessThanOrEqual(60_000);
       await configureConnector("ha-standby");
+      await expect(
+        appendProbe(standbyUrl, afterPromotionRequestId, "after-promotion"),
+      ).rejects.toMatchObject({ code: "P0001" });
+      const promotedAdmission = new Pool({ connectionString: standbyUrl });
+      try {
+        await promotedAdmission.query(
+          "SELECT event_store.set_cdc_delivery_health(true)",
+        );
+      } finally {
+        await promotedAdmission.end();
+      }
       await appendProbe(standbyUrl, afterPromotionRequestId, "after-promotion");
       await allDelivered;
       await expect(reconcile(standbyUrl)).resolves.toMatchObject({
