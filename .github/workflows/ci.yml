@@ -36,7 +36,7 @@ jobs:
       - run: RUN_STRESS=true npx vitest run tests/sql-contract/concurrency.test.ts
 
   latency:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
