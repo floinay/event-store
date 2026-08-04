@@ -21,7 +21,17 @@ jobs:
       - run: npm run format
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run test:unit
+
+  pr-full:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24.18.0, cache: npm }
+      - run: npm ci
       - run: npm run test:integration
 
   stress:
