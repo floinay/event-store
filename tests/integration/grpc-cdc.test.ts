@@ -197,7 +197,18 @@ suite("gRPC to CDC", () => {
       expect(metrics).toMatch(
         /event_store_cdc_commit_to_consumer_latency_seconds_count [1-9]/,
       );
+      await stack.setConnectKafkaEnabled(false);
+      const unavailableDeadline = Date.now() + 10_000;
+      while (Date.now() < unavailableDeadline) {
+        metrics = await fetch("http://127.0.0.1:50164/metrics").then((result) =>
+          result.text(),
+        );
+        if (metrics.includes("event_store_cdc_latency_probe_up 0")) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(metrics).toContain("event_store_cdc_latency_probe_up 0");
     } finally {
+      await stack.setConnectKafkaEnabled(true);
       await new Promise<void>((resolve) => probeServer.tryShutdown(resolve));
       for (const [name, value] of Object.entries(previous)) {
         const key =

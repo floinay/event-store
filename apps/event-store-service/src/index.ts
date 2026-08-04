@@ -144,6 +144,9 @@ async function startCdcLatencyProbe(
   });
   const pending = new Map<string, number>();
   let connected = false;
+  let lastMeasurementEpochMs: number | undefined;
+  let lastFailureEpochMs: number | undefined;
+  const staleAfterMs = intervalMs * 3;
   await consumer.connect();
   await consumer.subscribe({ topics: [topic], replace: true });
   await consumer.run({
@@ -157,6 +160,8 @@ async function startCdcLatencyProbe(
       if (committedEpochMs === undefined) return;
       pending.delete(eventId);
       histogram.observe(receivedEpochMs - committedEpochMs);
+      lastMeasurementEpochMs = receivedEpochMs;
+      lastFailureEpochMs = undefined;
     },
   });
   connected = true;
@@ -191,16 +196,25 @@ async function startCdcLatencyProbe(
       pending.set(eventId, result.commitEpochMs);
     const cutoff = Date.now() - 300_000;
     for (const [id, committedAt] of pending)
-      if (committedAt < cutoff) pending.delete(id);
+      if (committedAt < cutoff) {
+        pending.delete(id);
+        lastFailureEpochMs = Date.now();
+      }
   };
-  const timer = setInterval(
-    () => void publish().catch(() => undefined),
-    intervalMs,
-  );
+  const publishSafely = (): void => {
+    void publish().catch(() => {
+      lastFailureEpochMs = Date.now();
+    });
+  };
+  const timer = setInterval(publishSafely, intervalMs);
   timer.unref();
-  void publish().catch(() => undefined);
+  publishSafely();
   return {
-    up: () => connected,
+    up: () =>
+      connected &&
+      lastMeasurementEpochMs !== undefined &&
+      Date.now() - lastMeasurementEpochMs <= staleAfterMs &&
+      lastFailureEpochMs === undefined,
     stop: async () => {
       connected = false;
       clearInterval(timer);
