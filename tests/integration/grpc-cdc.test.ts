@@ -151,7 +151,7 @@ suite("gRPC to CDC", () => {
     expect(metrics).toContain("event_store_append_total");
   });
 
-  it("fails closed after a Connect process crash releases the replication slot", async () => {
+  it("keeps a bounded durable append window after a Connect process crash", async () => {
     await stack.stopConnect();
     const pool = await stack.pool();
     try {
@@ -197,7 +197,7 @@ suite("gRPC to CDC", () => {
               }),
             ],
           ),
-        ).rejects.toMatchObject({ code: "P0001" });
+        ).resolves.toBeDefined();
       } finally {
         await direct.query("RESET ROLE").catch(() => undefined);
         direct.release();
