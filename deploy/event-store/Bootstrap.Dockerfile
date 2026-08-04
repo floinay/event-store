@@ -11,6 +11,10 @@ FROM node:24.18.0-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/apps/event-store-service/dist ./apps/event-store-service/dist
 COPY --from=build /app/packages ./packages
-CMD ["node", "apps/event-store-service/dist/index.js"]
+COPY --from=build /app/tools/migrate/dist ./tools/migrate/dist
+COPY --from=build /app/tools/bootstrap/dist ./tools/bootstrap/dist
+COPY migrations ./migrations
+COPY deploy/connector ./deploy/connector
+COPY deploy/kafka ./deploy/kafka
+CMD ["node", "tools/bootstrap/dist/index.js"]
