@@ -10,6 +10,7 @@
       "compression.type": "producer",
       "max.message.bytes": "2097152",
       "message.timestamp.type": "CreateTime",
+      "min.insync.replicas": "2",
       "unclean.leader.election.enable": "false"
     }
   },
@@ -17,7 +18,7 @@
     "name": "event-store.projection-dlq.v1",
     "partitions": 24,
     "replicationFactor": 3,
-    "configs": { "retention.ms": "2592000000" }
+    "configs": { "retention.ms": "2592000000", "min.insync.replicas": "2" }
   },
   {
     "name": "__debezium-heartbeat.event-store-cdc",

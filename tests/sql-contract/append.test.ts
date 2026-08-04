@@ -71,6 +71,37 @@ suite("append SQL contract", () => {
     expect(owner.rows[0]?.owner).toBe("event_store_owner");
   });
 
+  it("does not expose append implementation functions to PUBLIC or CDC", async () => {
+    const privileges = await pool.query<{
+      public_append: boolean;
+      cdc_append: boolean;
+      app_append: boolean;
+      public_unchecked: boolean;
+    }>(
+      `SELECT
+         NOT EXISTS (
+           SELECT 1 FROM pg_proc AS proc
+           CROSS JOIN LATERAL aclexplode(coalesce(proc.proacl, acldefault('f', proc.proowner))) AS acl
+           WHERE proc.oid='event_store.append_v1(text,text,text,uuid,uuid,text,bigint,jsonb,jsonb)'::regprocedure
+             AND acl.grantee=0 AND acl.privilege_type='EXECUTE'
+         ) AS public_append,
+         has_function_privilege('event_store_cdc','event_store.append_v1(text,text,text,uuid,uuid,text,bigint,jsonb,jsonb)','EXECUTE') AS cdc_append,
+         has_function_privilege('event_store_app','event_store.append_v1(text,text,text,uuid,uuid,text,bigint,jsonb,jsonb)','EXECUTE') AS app_append,
+         NOT EXISTS (
+           SELECT 1 FROM pg_proc AS proc
+           CROSS JOIN LATERAL aclexplode(coalesce(proc.proacl, acldefault('f', proc.proowner))) AS acl
+           WHERE proc.oid='event_store.append_v1_unchecked(text,text,text,uuid,uuid,text,bigint,jsonb,jsonb)'::regprocedure
+             AND acl.grantee=0 AND acl.privilege_type='EXECUTE'
+         ) AS public_unchecked`,
+    );
+    expect(privileges.rows[0]).toEqual({
+      public_append: false,
+      cdc_append: false,
+      app_append: true,
+      public_unchecked: false,
+    });
+  });
+
   it("rejects a direct SQL append with an invalid canonical context", async () => {
     const error = await pool
       .query(
@@ -130,7 +161,8 @@ suite("append SQL contract", () => {
       ],
     );
     const eventId = appended.rows[0]?.append_v1.events[0]?.eventId;
-    if (eventId === undefined) throw new Error("direct append did not return eventId");
+    if (eventId === undefined)
+      throw new Error("direct append did not return eventId");
     const result = await pool.query<{ event_envelope: { context: unknown } }>(
       "SELECT event_envelope FROM event_store.events WHERE event_id=$1",
       [eventId],
