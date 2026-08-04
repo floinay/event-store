@@ -163,6 +163,7 @@ export class ProjectionFailureReporter {
         JSON.stringify(envelope),
       ],
     );
+    await this.pool.query("SELECT projection_runtime.prune_failures()");
   }
 
   async markDlqPublished(record: ConsumedRecord): Promise<void> {
