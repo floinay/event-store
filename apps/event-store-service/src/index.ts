@@ -22,6 +22,24 @@ export function connectQueueRatio(metrics: string, connectorName: string): numbe
   return remaining / total;
 }
 
+/** Critical WAL headroom is reserved for explicitly trusted mTLS callers. */
+export function trafficClassForClient(
+  requestedCritical: boolean,
+  peerCommonName: string | undefined,
+  trustedCriticalSubjects: readonly string[],
+): "standard" | "critical" {
+  if (!requestedCritical) return "standard";
+  if (
+    peerCommonName === undefined ||
+    !trustedCriticalSubjects.includes(peerCommonName)
+  )
+    throw Object.assign(
+      new Error("critical appends require a trusted mTLS client identity"),
+      { code: grpc.status.PERMISSION_DENIED },
+    );
+  return "critical";
+}
+
 export async function verifyKafkaReadiness(
   brokers: readonly string[],
   topicName: string,
@@ -108,6 +126,7 @@ export function errorFrom(
   const source = error as { code?: string; message?: string };
   const message = source.message ?? "internal error";
   const sqlCode = source.code;
+  const statusCode = (error as { code?: unknown }).code;
   let code = grpc.status.INTERNAL;
   let machineCode = "internal_error";
   if (
@@ -125,6 +144,8 @@ export function errorFrom(
     [code, machineCode] = [grpc.status.ABORTED, "expected_revision_conflict"];
   else if (sqlCode === "57014")
     [code, machineCode] = [grpc.status.DEADLINE_EXCEEDED, "deadline_exceeded"];
+  else if (statusCode === grpc.status.PERMISSION_DENIED)
+    [code, machineCode] = [grpc.status.PERMISSION_DENIED, "critical_append_forbidden"];
   else if (sqlCode === "23505")
     [code, machineCode] = [grpc.status.ALREADY_EXISTS, "idempotency_conflict"];
   else if (sqlCode === "XX001")
@@ -204,7 +225,11 @@ function parseExpected(
   });
 }
 
-function parseAppendRequest(request: AppendRequest, producerService: string) {
+function parseAppendRequest(
+  request: AppendRequest,
+  producerService: string,
+  trafficClass: "standard" | "critical",
+) {
   requireUuid(request.request_id);
   requireUuid(request.aggregate_id);
   const actor = JSON.parse(request.context.actor_json.toString()) as unknown;
@@ -214,7 +239,7 @@ function parseAppendRequest(request: AppendRequest, producerService: string) {
     causationId: request.context.causation_id || null,
     actor,
     traceparent: request.context.traceparent,
-    trafficClass: request.context.critical === true ? "critical" : "standard",
+    trafficClass,
   });
   return {
     producerService,
@@ -361,6 +386,10 @@ export async function startServer(): Promise<grpc.Server> {
   };
   const service = loaded.eventstore.v1.EventStoreService;
   const server = new grpc.Server();
+  const trustedCriticalSubjects = (process.env.CRITICAL_CLIENT_SUBJECTS ?? "")
+    .split(",")
+    .map((subject) => subject.trim())
+    .filter((subject) => subject.length > 0);
   server.addService(service.service, {
     AppendToStream: async (
       call: grpc.ServerUnaryCall<AppendRequest, JsonObject>,
@@ -368,8 +397,13 @@ export async function startServer(): Promise<grpc.Server> {
     ) => {
       try {
         const started = performance.now();
+        const trafficClass = trafficClassForClient(
+          call.request.context.critical === true,
+          call.getAuthContext().sslPeerCertificate?.subject?.CN,
+          trustedCriticalSubjects,
+        );
         const result = await store.append(
-          parseAppendRequest(call.request, producerService),
+          parseAppendRequest(call.request, producerService, trafficClass),
         );
         // This span is emitted after PostgreSQL completed the append statement,
         // before gRPC writes the acknowledgement. It is intentionally monotonic:
