@@ -1,10 +1,10 @@
 import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const schemaRoot = fileURLToPath(
-  new globalThis.URL("../schemas/", import.meta.url),
-);
+const schemaRoot = globalThis.process.env.JSON_SCHEMA_ROOT
+  ? resolve(globalThis.process.env.JSON_SCHEMA_ROOT)
+  : fileURLToPath(new globalThis.URL("../schemas/", import.meta.url));
 
 async function schemaFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -34,6 +34,42 @@ function types(schema) {
 
 function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object")
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function assertOpaqueKeywordsUnchanged(previous, next, label) {
+  // These keywords compose schemas or impose constraints the structural
+  // checker below cannot prove to be a widening. A change could reject a
+  // historical envelope, so compatibility is fail-closed unless byte-wise
+  // equivalent after canonical key ordering.
+  for (const keyword of [
+    "$ref",
+    "$dynamicRef",
+    "not",
+    "if",
+    "then",
+    "else",
+    "contains",
+    "minContains",
+    "maxContains",
+    "propertyNames",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "dependentSchemas",
+  ])
+    if (stableJson(previous[keyword]) !== stableJson(next[keyword]))
+      throw new Error(
+        `${label}: ${keyword} changed without a compatibility proof`,
+      );
 }
 
 function assertDoesNotNarrow(previous, next, label) {
@@ -93,6 +129,7 @@ function assertDoesNotNarrow(previous, next, label) {
 }
 
 function assertBackwardCompatible(previous, next, label) {
+  assertOpaqueKeywordsUnchanged(previous, next, label);
   for (const required of next.required ?? [])
     if (!(previous.required ?? []).includes(required))
       throw new Error(
