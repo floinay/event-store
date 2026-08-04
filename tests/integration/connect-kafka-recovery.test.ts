@@ -75,6 +75,12 @@ suite("Connect to Kafka network recovery", () => {
         },
       ],
     });
+    await expect(
+      Promise.race([
+        delivered.then(() => false),
+        new Promise<true>((resolve) => setTimeout(() => resolve(true), 1_000)),
+      ]),
+    ).resolves.toBe(true);
     await stack.setConnectKafkaEnabled(true);
     await expect(delivered).resolves.toBeUndefined();
     await consumer.disconnect();
