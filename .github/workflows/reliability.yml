@@ -57,7 +57,9 @@ jobs:
       - run: >-
           RUN_LATENCY=true RUN_RELEASE_LATENCY=true
           LATENCY_DURATION_MS=21600000 LATENCY_SAMPLE_COUNT=100
-          LATENCY_CONCURRENCY=16
+          LATENCY_CONCURRENCY=16 LATENCY_APPEND_RATE=100
+          LATENCY_BATCH_SIZE=1 LATENCY_PAYLOAD_BYTES=2048
+          LATENCY_STREAM_COUNT=1000 LATENCY_HOT_STREAM_PERCENT=0
           npx vitest run tests/performance/cdc-latency.test.ts
           --reporter=json --outputFile=cdc-weekly-soak.json
       - uses: actions/upload-artifact@v4
@@ -65,4 +67,72 @@ jobs:
         with:
           name: cdc-weekly-soak
           path: cdc-weekly-soak.json
+          retention-days: 35
+
+  nightly-load-profiles:
+    if: github.event.schedule != '0 1 * * 0' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - name: steady-100
+            rate: 100
+            batch: 1
+            payload: 2048
+            streams: 1000
+            hot_percent: 0
+            duration: 1800000
+          - name: throughput-500
+            rate: 500
+            batch: 2
+            payload: 2048
+            streams: 5000
+            hot_percent: 0
+            duration: 1800000
+          - name: burst-1000
+            rate: 1000
+            batch: 2
+            payload: 2048
+            streams: 10000
+            hot_percent: 0
+            duration: 600000
+          - name: hot-streams
+            rate: 100
+            batch: 1
+            payload: 2048
+            streams: 1000
+            hot_percent: 50
+            duration: 1800000
+          - name: large-payload
+            rate: 100
+            batch: 1
+            payload: 65536
+            streams: 1000
+            hot_percent: 0
+            duration: 900000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24.18.0, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - run: >-
+          RUN_LATENCY=true RUN_RELEASE_LATENCY=true
+          LATENCY_DURATION_MS=${{ matrix.profile.duration }}
+          LATENCY_SAMPLE_COUNT=100 LATENCY_CONCURRENCY=16
+          LATENCY_APPEND_RATE=${{ matrix.profile.rate }}
+          LATENCY_BATCH_SIZE=${{ matrix.profile.batch }}
+          LATENCY_PAYLOAD_BYTES=${{ matrix.profile.payload }}
+          LATENCY_STREAM_COUNT=${{ matrix.profile.streams }}
+          LATENCY_HOT_STREAM_PERCENT=${{ matrix.profile.hot_percent }}
+          LATENCY_HOT_STREAM_COUNT=10
+          npx vitest run tests/performance/cdc-latency.test.ts
+          --reporter=json --outputFile=cdc-${{ matrix.profile.name }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cdc-${{ matrix.profile.name }}
+          path: cdc-${{ matrix.profile.name }}.json
           retention-days: 35
