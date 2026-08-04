@@ -369,7 +369,6 @@ EOF
           "transforms.outbox.table.field.event.key": "partition_key",
           "transforms.outbox.table.field.event.type": "event_name",
           "transforms.outbox.table.field.event.payload": "event_envelope",
-          "transforms.outbox.table.field.event.timestamp": "recorded_at",
           "transforms.outbox.route.by.field": "topic_route",
           "transforms.outbox.route.topic.regex": "(.*)",
           "transforms.outbox.route.topic.replacement": "$1.events.v1",
@@ -465,7 +464,6 @@ EOF
           "transforms.outbox.table.field.event.key": "partition_key",
           "transforms.outbox.table.field.event.type": "event_name",
           "transforms.outbox.table.field.event.payload": "event_envelope",
-          "transforms.outbox.table.field.event.timestamp": "recorded_at",
           "transforms.outbox.route.by.field": "topic_route",
           "transforms.outbox.route.topic.regex": "(.*)",
           "transforms.outbox.route.topic.replacement": "$1.events.v1",
@@ -596,6 +594,22 @@ EOF
     if (this.#connectKafkaProxy === undefined)
       throw new Error("Connect-to-Kafka Toxiproxy is not configured");
     await this.#connectKafkaProxy.setEnabled(enabled);
+  }
+
+  async addConnectKafkaLatency(
+    milliseconds: number,
+  ): Promise<TPClient.Toxic<TPClient.Latency>> {
+    if (!Number.isInteger(milliseconds) || milliseconds < 0)
+      throw new TypeError("milliseconds must be a non-negative integer");
+    if (this.#connectKafkaProxy === undefined)
+      throw new Error("Connect-to-Kafka Toxiproxy is not configured");
+    return this.#connectKafkaProxy.instance.addToxic({
+      name: `connect-kafka-response-latency-${milliseconds}`,
+      type: "latency",
+      stream: "downstream",
+      toxicity: 1,
+      attributes: { latency: milliseconds, jitter: 0 },
+    });
   }
 
   async setConnectPacketLoss(percent: 1 | 5 | 0): Promise<void> {
