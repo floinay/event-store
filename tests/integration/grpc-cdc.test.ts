@@ -168,6 +168,40 @@ suite("gRPC to CDC", () => {
       ).resolves.toMatchObject({
         status: 503,
       });
+      const direct = await pool.connect();
+      try {
+        await direct.query("SET ROLE event_store_app");
+        await expect(
+          direct.query(
+            "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+            [
+              "orders-command",
+              "orders",
+              "Order",
+              uuidv7(),
+              uuidv7(),
+              "no_stream",
+              null,
+              JSON.stringify([
+                {
+                  eventName: "order.created",
+                  schemaVersion: 1,
+                  occurredAt: "2026-08-04T10:12:18.120Z",
+                  payload: {},
+                },
+              ]),
+              JSON.stringify({
+                correlationId: uuidv7(),
+                causationId: null,
+                actor: { kind: "user", subjectRef: "usr_1" },
+              }),
+            ],
+          ),
+        ).rejects.toMatchObject({ code: "P0001" });
+      } finally {
+        await direct.query("RESET ROLE").catch(() => undefined);
+        direct.release();
+      }
       const error = await new Promise<grpc.ServiceError | null>((resolve) =>
         client.AppendToStream(
           {

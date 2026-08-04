@@ -21,6 +21,7 @@ export interface BootstrapOptions {
   connectorName: string;
   connectorConfig: Record<string, string>;
   topics: TopicDefinition[];
+  walBudgetBytes: bigint;
   createClusterRoles?: boolean;
 }
 
@@ -140,6 +141,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
         if ((error as { code?: string }).code !== "42710") throw error;
       }
     }
+    await database.query("SELECT event_store.enable_append_admission($1)", [
+      options.walBudgetBytes.toString(),
+    ]);
   } finally {
     await database.end();
   }
@@ -172,16 +176,20 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const connectUrl = process.env.CONNECT_URL;
   const connectorPath = process.env.CONNECTOR_CONFIG_PATH;
   const topicsPath = process.env.TOPICS_CONFIG_PATH;
+  const walBudget = process.env.CDC_WAL_BUDGET_BYTES;
   if (
     migrationDatabaseUrl === undefined ||
     replicationDatabaseUrl === undefined ||
     brokers === undefined ||
     connectUrl === undefined ||
     connectorPath === undefined ||
-    topicsPath === undefined
+    topicsPath === undefined ||
+    walBudget === undefined ||
+    !/^\d+$/.test(walBudget) ||
+    BigInt(walBudget) <= 0n
   )
     throw new Error(
-      "MIGRATION_DATABASE_URL, REPLICATION_DATABASE_URL, KAFKA_BROKERS, CONNECT_URL, CONNECTOR_CONFIG_PATH and TOPICS_CONFIG_PATH are required",
+      "MIGRATION_DATABASE_URL, REPLICATION_DATABASE_URL, KAFKA_BROKERS, CONNECT_URL, CONNECTOR_CONFIG_PATH, TOPICS_CONFIG_PATH and positive CDC_WAL_BUDGET_BYTES are required",
     );
   const connector = JSON.parse(await readFile(connectorPath, "utf8")) as {
     name: string;
@@ -195,6 +203,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     connectorName: connector.name,
     connectorConfig: connector.config,
     topics: JSON.parse(await readFile(topicsPath, "utf8")) as TopicDefinition[],
+    walBudgetBytes: BigInt(walBudget),
     createClusterRoles: process.env.MIGRATE_CLUSTER === "true",
   });
 }

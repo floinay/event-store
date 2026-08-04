@@ -21,6 +21,8 @@ spec:
               value: kafka-1:9092,kafka-2:9092,kafka-3:9092
             - name: CONNECT_URL
               value: http://connect:8083
+            - name: CDC_WAL_BUDGET_BYTES
+              value: "8589934592"
             - name: CONNECTOR_CONFIG_PATH
               value: /app/deploy/connector/event-store-live.json
             - name: TOPICS_CONFIG_PATH
