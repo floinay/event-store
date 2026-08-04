@@ -104,6 +104,16 @@ suite("PostgreSQL HA promotion", () => {
     const pool = new Pool({ connectionString: primaryUrl });
     try {
       await pool.query(
+        "ALTER SYSTEM SET synchronous_standby_names = 'FIRST 1 (\"ha-standby\")'",
+      );
+      await pool.query("SELECT pg_reload_conf()");
+      await eventually(async () => {
+        const replication = await pool.query<{ sync_state: string }>(
+          "SELECT sync_state FROM pg_stat_replication WHERE application_name='ha-standby'",
+        );
+        return replication.rows[0]?.sync_state === "sync";
+      });
+      await pool.query(
         "SELECT * FROM pg_create_logical_replication_slot('event_store_live', 'pgoutput', false, false, true)",
       );
     } finally {
@@ -168,6 +178,7 @@ suite("PostgreSQL HA promotion", () => {
     } finally {
       await pool.end();
     }
+    const promotionStartedAt = Date.now();
     await primary.stop();
     const promote = await standby.exec([
       "bash",
@@ -189,6 +200,7 @@ suite("PostgreSQL HA promotion", () => {
         await pool.end();
       }
     });
+    expect(Date.now() - promotionStartedAt).toBeLessThanOrEqual(60_000);
     await expect(reconcile(standbyUrl)).resolves.toMatchObject({
       count: "1",
       revisionGaps: "0",
