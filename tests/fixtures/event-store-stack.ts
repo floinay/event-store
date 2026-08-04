@@ -98,7 +98,7 @@ export class EventStoreStack {
       })
       .withNetwork(this.#network)
       .withNetworkAliases("kafka")
-      .withExposedPorts({ container: 9092, host: 9092 })
+      .withExposedPorts(9092)
       .withWaitStrategy(Wait.forLogMessage(/Kafka Server started/))
       .start();
     const kafka = new KafkaJS.Kafka({
@@ -240,7 +240,7 @@ export class EventStoreStack {
 
   kafkaBroker(): string {
     if (this.#kafka === undefined) throw new Error("CDC stack is not started");
-    return `${this.#kafka.getHost()}:9092`;
+    return `${this.#kafka.getHost()}:${this.#kafka.getMappedPort(9092)}`;
   }
 
   async cdcDiagnostic(): Promise<unknown> {
