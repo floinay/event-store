@@ -10,3 +10,38 @@ rules:
     labels:
       connector: "$1"
     type: GAUGE
+  - pattern: "debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>CurrentQueueSizeInBytes"
+    name: event_store_connect_queue_size_bytes
+    labels:
+      connector: "$1"
+    type: GAUGE
+  - pattern: "debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>MaxQueueSizeInBytes"
+    name: event_store_connect_queue_max_bytes
+    labels:
+      connector: "$1"
+    type: GAUGE
+  - pattern: "debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>MilliSecondsBehindSource"
+    name: event_store_connect_milliseconds_behind_source
+    labels:
+      connector: "$1"
+    type: GAUGE
+  - pattern: "debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>MilliSecondsBehindSourceP95"
+    name: event_store_connect_milliseconds_behind_source_p95
+    labels:
+      connector: "$1"
+    type: GAUGE
+  - pattern: "debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>MilliSecondsBehindSourceP99"
+    name: event_store_connect_milliseconds_behind_source_p99
+    labels:
+      connector: "$1"
+    type: GAUGE
+  - pattern: "debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>Connected"
+    name: event_store_connect_source_connected
+    labels:
+      connector: "$1"
+    type: GAUGE
+  - pattern: "debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>NumberOfCommittedTransactions"
+    name: event_store_connect_committed_transactions_total
+    labels:
+      connector: "$1"
+    type: COUNTER
