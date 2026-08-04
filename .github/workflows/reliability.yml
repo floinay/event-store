@@ -96,6 +96,7 @@ jobs:
             streams: 1000
             hot_percent: 0
             duration: 1800000
+            fault: none
           - name: throughput-500
             rate: 500
             batch: 2
@@ -103,6 +104,7 @@ jobs:
             streams: 5000
             hot_percent: 0
             duration: 1800000
+            fault: none
           - name: burst-1000
             rate: 1000
             batch: 2
@@ -110,6 +112,7 @@ jobs:
             streams: 10000
             hot_percent: 0
             duration: 600000
+            fault: none
           - name: hot-streams
             rate: 100
             batch: 1
@@ -117,6 +120,7 @@ jobs:
             streams: 1000
             hot_percent: 50
             duration: 1800000
+            fault: none
           - name: large-payload
             rate: 100
             batch: 1
@@ -124,6 +128,23 @@ jobs:
             streams: 1000
             hot_percent: 0
             duration: 900000
+            fault: none
+          - name: connect-restart-under-load
+            rate: 100
+            batch: 1
+            payload: 2048
+            streams: 1000
+            hot_percent: 0
+            duration: 1800000
+            fault: connect_restart
+          - name: kafka-restart-under-load
+            rate: 100
+            batch: 1
+            payload: 2048
+            streams: 1000
+            hot_percent: 0
+            duration: 1800000
+            fault: kafka_restart
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -140,6 +161,7 @@ jobs:
           LATENCY_STREAM_COUNT=${{ matrix.profile.streams }}
           LATENCY_HOT_STREAM_PERCENT=${{ matrix.profile.hot_percent }}
           LATENCY_HOT_STREAM_COUNT=10
+          LATENCY_FAULT=${{ matrix.profile.fault }} LATENCY_FAULT_AT_MS=60000
           npx vitest run tests/performance/cdc-latency.test.ts
           --reporter=json --outputFile=cdc-${{ matrix.profile.name }}.json
       - uses: actions/upload-artifact@v4

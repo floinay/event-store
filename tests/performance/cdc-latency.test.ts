@@ -25,6 +25,8 @@ const consumerCpuWorkMs = Number(process.env.LATENCY_CONSUMER_CPU_WORK_MS ?? 0);
 const connectKafkaLatencyMs = Number(
   process.env.LATENCY_CONNECT_KAFKA_LATENCY_MS ?? 0,
 );
+const latencyFault = process.env.LATENCY_FAULT ?? "none";
+const latencyFaultAtMs = Number(process.env.LATENCY_FAULT_AT_MS ?? 60_000);
 const latencyTestTimeoutMs = Math.max(180_000, durationMs + 60_000);
 
 interface AppendClient extends grpc.Client {
@@ -168,6 +170,22 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         throw new Error(
           "LATENCY_CONNECT_KAFKA_LATENCY_MS must be non-negative",
         );
+      if (
+        latencyFault !== "none" &&
+        latencyFault !== "connect_restart" &&
+        latencyFault !== "kafka_restart"
+      )
+        throw new Error(
+          "LATENCY_FAULT must be none, connect_restart, or kafka_restart",
+        );
+      if (
+        !Number.isInteger(latencyFaultAtMs) ||
+        latencyFaultAtMs < 0 ||
+        latencyFaultAtMs >= durationMs
+      )
+        throw new Error(
+          "LATENCY_FAULT_AT_MS must be a non-negative integer before the test end",
+        );
       if (process.env.RUN_RELEASE_LATENCY === "true" && durationMs < 1_800_000)
         throw new Error("release latency profile requires at least 30 minutes");
       const committed = new Map<string, number>();
@@ -237,6 +255,15 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         }),
       );
       const deadline = performance.now() + durationMs;
+      const fault =
+        latencyFault === "none"
+          ? undefined
+          : (async () => {
+              await delay(latencyFaultAtMs);
+              if (latencyFault === "connect_restart")
+                await stack.restartConnect();
+              else await stack.restartKafka();
+            })();
       let index = 0;
       let nextRateSlot = performance.now();
       const appendOne = async (): Promise<void> => {
@@ -298,6 +325,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       };
       await Promise.all(Array.from({ length: concurrency }, worker));
       appendsFinished = true;
+      await fault;
       if (allSamplesReceived(committed, observed)) received();
       await samplesReceived;
       await consumer.disconnect();
