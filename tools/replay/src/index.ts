@@ -10,10 +10,11 @@ export interface ReplayIdentity {
   replayId: string;
 }
 
-export interface ReplayReadiness {
-  kafkaLag: bigint;
-  expectedChecksum: string;
-  actualChecksum: string;
+export interface ReplayVerification {
+  /** The replay projection consumer group whose offsets must be caught up. */
+  consumerGroupId: string;
+  /** Projection-specific deterministic full-fold and rebuilt-model checksums. */
+  checksums: () => Promise<{ expected: string; actual: string }>;
 }
 
 export interface ReplayBarrier {
@@ -267,11 +268,14 @@ export class ReplayCoordinator {
 
   async activate(
     identity: ReplayIdentity,
-    readiness: ReplayReadiness,
+    verification: ReplayVerification,
   ): Promise<void> {
-    if (readiness.kafkaLag !== 0n)
-      throw new Error(`replay Kafka lag is ${readiness.kafkaLag}`);
-    if (readiness.expectedChecksum !== readiness.actualChecksum)
+    const [kafkaLag, checksums] = await Promise.all([
+      this.replayKafkaLag(identity, verification.consumerGroupId),
+      verification.checksums(),
+    ]);
+    if (kafkaLag !== 0n) throw new Error(`replay Kafka lag is ${kafkaLag}`);
+    if (checksums.expected !== checksums.actual)
       throw new Error("replay checksum differs from full fold");
     const client = await this.pool.connect();
     try {
@@ -307,6 +311,45 @@ export class ReplayCoordinator {
       throw error;
     } finally {
       client.release();
+    }
+  }
+
+  private async replayKafkaLag(
+    identity: ReplayIdentity,
+    consumerGroupId: string,
+  ): Promise<bigint> {
+    const topic = replayTopicName(identity.replayId);
+    const kafka = new KafkaJS.Kafka({ kafkaJS: { brokers: this.brokers } });
+    const admin = kafka.admin();
+    await admin.connect();
+    try {
+      const [endOffsets, groupOffsets] = await Promise.all([
+        admin.fetchTopicOffsets(topic, {
+          isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
+        }),
+        admin.fetchOffsets({ groupId: consumerGroupId, topics: [topic] }),
+      ]);
+      const committed = new Map(
+        (groupOffsets[0]?.partitions ?? []).map((partition) => [
+          partition.partition,
+          BigInt(partition.offset),
+        ]),
+      );
+      return endOffsets.reduce((lag, partition) => {
+        const low = BigInt(partition.low);
+        const high = BigInt(partition.high);
+        if (high < 0n) return lag;
+        const offset = committed.get(partition.partition) ?? low;
+        // Kafka reports -1 for a group with no committed offset.
+        const position = offset < low ? low : offset;
+        if (position > high)
+          throw new Error(
+            `replay consumer offset ${position} is ahead of ${topic}/${partition.partition} high watermark ${high}`,
+          );
+        return lag + (high - position);
+      }, 0n);
+    } finally {
+      await admin.disconnect();
     }
   }
 

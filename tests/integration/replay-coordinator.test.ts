@@ -3,6 +3,7 @@ import { uuidv7 } from "@event-store/contracts";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import {
   appendReplayBarriers,
+  ensureReplayTopic,
   kafkaDefaultPartition,
   ReplayCoordinator,
   replayConnectorConfig,
@@ -32,13 +33,18 @@ suite("replay coordinator", () => {
       generationId: uuidv7(),
       replayId: "orders-aug-2026",
     };
-    const coordinator = new ReplayCoordinator(pool, "http://unused", []);
+    const coordinator = new ReplayCoordinator(
+      pool,
+      "http://unused",
+      [stack.kafkaBroker()],
+      1,
+    );
     await coordinator.createGeneration(identity);
+    await ensureReplayTopic([stack.kafkaBroker()], identity.replayId, 1);
     await expect(
       coordinator.activate(identity, {
-        kafkaLag: 0n,
-        expectedChecksum: "same",
-        actualChecksum: "same",
+        consumerGroupId: `replay-empty-${uuidv7()}`,
+        checksums: async () => ({ expected: "same", actual: "same" }),
       }),
     ).rejects.toThrow("all 24 replay barriers");
     const barriers = await appendReplayBarriers(
@@ -52,9 +58,8 @@ suite("replay coordinator", () => {
         barrier.eventId,
       );
     await coordinator.activate(identity, {
-      kafkaLag: 0n,
-      expectedChecksum: "same",
-      actualChecksum: "same",
+      consumerGroupId: `replay-empty-${uuidv7()}`,
+      checksums: async () => ({ expected: "same", actual: "same" }),
     });
     expect(
       (
