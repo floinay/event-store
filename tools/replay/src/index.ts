@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { Pool } from "pg";
 import { partitionKey, uuidv7 } from "@event-store/contracts";
@@ -126,9 +127,13 @@ export function kafkaDefaultPartition(key: string): number {
   return (murmur2(Buffer.from(key)) & 0x7fffffff) % kafkaPartitionCount;
 }
 
-function barrierAggregateId(partition: number): string {
+function barrierAggregateId(replayId: string, partition: number): string {
   for (let attempts = 0; attempts < 10_000; attempts += 1) {
-    const aggregateId = uuidv7();
+    const aggregateId = stableBarrierId(
+      replayId,
+      partition,
+      `aggregate-${attempts}`,
+    );
     if (
       kafkaDefaultPartition(
         partitionKey({
@@ -145,6 +150,17 @@ function barrierAggregateId(partition: number): string {
   );
 }
 
+function stableBarrierId(replayId: string, partition: number, kind: string): string {
+  const bytes = createHash("sha256")
+    .update(`${kind}:${replayId}:${partition}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** Appends exactly one partition-verified barrier event for each replay partition. */
 export async function appendReplayBarriers(
   store: PostgresEventStore,
@@ -154,8 +170,8 @@ export async function appendReplayBarriers(
     throw new Error("replayId must be lowercase alphanumeric/hyphen");
   const barriers: ReplayBarrier[] = [];
   for (let partition = 0; partition < kafkaPartitionCount; partition += 1) {
-    const aggregateId = barrierAggregateId(partition);
-    const requestId = uuidv7();
+    const aggregateId = barrierAggregateId(replayId, partition);
+    const requestId = stableBarrierId(replayId, partition, "request");
     const result = await store.appendRecoveryBarrier(
       replayId,
       partition,
