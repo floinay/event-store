@@ -164,7 +164,7 @@ export class ProjectionFailureReporter {
       [
         this.identity.name,
         this.identity.generationId,
-        this.eventId(envelope),
+        this.eventId(envelope, record),
         this.envelopeHash(record),
         record.topic,
         record.partition,
@@ -194,17 +194,38 @@ export class ProjectionFailureReporter {
     );
   }
 
-  private eventId(envelope: unknown): string | undefined {
-    if (envelope === null || typeof envelope !== "object") return undefined;
-    const eventId = (envelope as Record<string, unknown>).eventId;
-    return typeof eventId === "string" && /^[0-9a-f-]{36}$/i.test(eventId)
-      ? eventId
-      : undefined;
+  private eventId(envelope: unknown, record: ConsumedRecord): string {
+    if (envelope !== null && typeof envelope === "object") {
+      const eventId = (envelope as Record<string, unknown>).eventId;
+      if (typeof eventId === "string" && /^[0-9a-f-]{36}$/i.test(eventId))
+        return eventId;
+    }
+    return this.malformedRecordId(record);
   }
 
-  private envelopeHash(record: ConsumedRecord): string | undefined {
+  private envelopeHash(record: ConsumedRecord): string {
     const hash = record.headers.envelopeHash;
-    return hash !== undefined && /^[0-9a-f]{64}$/.test(hash) ? hash : undefined;
+    return hash !== undefined && /^[0-9a-f]{64}$/.test(hash)
+      ? hash
+      : createHash("sha256").update(record.value).digest("hex");
+  }
+
+  private malformedRecordId(record: ConsumedRecord): string {
+    const hex = createHash("sha256")
+      .update(this.identity.name)
+      .update("\0")
+      .update(this.identity.generationId)
+      .update("\0")
+      .update(record.topic)
+      .update("\0")
+      .update(String(record.partition))
+      .update("\0")
+      .update(record.offset.toString())
+      .digest("hex");
+    const variant = (Number.parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80;
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant
+      .toString(16)
+      .padStart(2, "0")}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
   }
 }
 
