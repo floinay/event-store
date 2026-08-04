@@ -756,6 +756,101 @@ suite("append SQL contract", () => {
     }
   });
 
+  it("serializes delivery fencing behind every append entry point", async () => {
+    const original = await pool.query<{
+      append_admission_enabled: boolean;
+      cdc_delivery_healthy: boolean;
+      cdc_delivery_startup_pending: boolean;
+      cdc_reconciliation_required: boolean;
+      cdc_delivery_incident_epoch: string;
+      cdc_reconciled_incident_epoch: string | null;
+    }>(
+      `SELECT append_admission_enabled,cdc_delivery_healthy,cdc_delivery_startup_pending,
+              cdc_reconciliation_required,cdc_delivery_incident_epoch,cdc_reconciled_incident_epoch
+         FROM event_store.runtime_config WHERE singleton`,
+    );
+    const appender = await pool.connect();
+    const healthCheck = await pool.connect();
+    try {
+      await pool.query(
+        `UPDATE event_store.runtime_config
+            SET append_admission_enabled=false,cdc_delivery_healthy=true,
+                cdc_delivery_startup_pending=false,cdc_reconciliation_required=false,
+                cdc_reconciled_incident_epoch=cdc_delivery_incident_epoch
+          WHERE singleton`,
+      );
+      const input = appendInput(id(), id(), [{ orderRef: "fence-lock" }]);
+      await appender.query("BEGIN");
+      await appender.query(
+        "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+        [
+          input.producerService,
+          input.namespace,
+          input.aggregateType,
+          input.aggregateId,
+          input.requestId,
+          input.expectedRevision.kind,
+          null,
+          JSON.stringify(input.events),
+          JSON.stringify(input.context),
+        ],
+      );
+      let completed = false;
+      const closeDelivery = healthCheck
+        .query("SELECT event_store.set_cdc_delivery_health(false)")
+        .finally(() => {
+          completed = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(completed).toBe(false);
+      await appender.query("COMMIT");
+      await closeDelivery;
+      await expect(
+        pool.query<{ cdc_reconciliation_required: boolean }>(
+          "SELECT cdc_reconciliation_required FROM event_store.runtime_config WHERE singleton",
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ cdc_reconciliation_required: true }],
+      });
+      const definitions = await pool.query<{ definition: string }>(
+        `SELECT pg_get_functiondef(proc.oid) AS definition
+           FROM pg_proc proc
+          WHERE proc.oid = ANY (ARRAY[
+            'event_store.append_v1(text,text,text,uuid,uuid,text,bigint,jsonb,jsonb)'::regprocedure,
+            'event_store.append_v1_critical(text,text,text,uuid,uuid,text,bigint,jsonb,jsonb)'::regprocedure,
+            'event_store.append_cdc_latency_probe(uuid)'::regprocedure
+          ])`,
+      );
+      expect(definitions.rows).toHaveLength(3);
+      expect(
+        definitions.rows.every((row) =>
+          /runtime_config WHERE singleton FOR SHARE/.test(row.definition),
+        ),
+      ).toBe(true);
+    } finally {
+      await appender.query("ROLLBACK").catch(() => undefined);
+      appender.release();
+      healthCheck.release();
+      const row = original.rows[0];
+      if (row !== undefined)
+        await pool.query(
+          `UPDATE event_store.runtime_config
+              SET append_admission_enabled=$1,cdc_delivery_healthy=$2,
+                  cdc_delivery_startup_pending=$3,cdc_reconciliation_required=$4,
+                  cdc_delivery_incident_epoch=$5,cdc_reconciled_incident_epoch=$6
+            WHERE singleton`,
+          [
+            row.append_admission_enabled,
+            row.cdc_delivery_healthy,
+            row.cdc_delivery_startup_pending,
+            row.cdc_reconciliation_required,
+            row.cdc_delivery_incident_epoch,
+            row.cdc_reconciled_incident_epoch,
+          ],
+        );
+    }
+  });
+
   it("rejects append admission for a non-failover CDC slot", async () => {
     const original = await pool.query<{ cdc_slot_name: string }>(
       "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
