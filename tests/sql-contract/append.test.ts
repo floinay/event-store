@@ -200,6 +200,66 @@ suite("append SQL contract", () => {
     expect(error?.code).toBe("22023");
   });
 
+  it("rejects direct SQL PII fields before the event is stored", async () => {
+    await expect(
+      pool.query(
+        "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+        [
+          "orders-command",
+          "orders",
+          "Order",
+          id(),
+          id(),
+          "no_stream",
+          null,
+          JSON.stringify([
+            {
+              eventName: "order.created",
+              schemaVersion: 1,
+              occurredAt: "2026-08-04T10:12:18.120Z",
+              payload: { email: "person@example.com" },
+            },
+          ]),
+          JSON.stringify({
+            correlationId: id(),
+            actor: { kind: "user", subjectRef: "usr_1" },
+          }),
+        ],
+      ),
+    ).rejects.toMatchObject({ code: "22023" });
+  });
+
+  it("rejects direct SQL numbers that cannot preserve the consumer hash", async () => {
+    const common = [
+      "orders-command",
+      "orders",
+      "Order",
+      id(),
+      id(),
+      "no_stream",
+      null,
+    ];
+    const context = JSON.stringify({
+      correlationId: id(),
+      actor: { kind: "user", subjectRef: "usr_1" },
+    });
+    for (const numericLiteral of ["9007199254740993", "1e400"]) {
+      await expect(
+        pool.query(
+          "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+          [
+            ...common.slice(0, 3),
+            id(),
+            id(),
+            ...common.slice(5),
+            `[{"eventName":"order.created","schemaVersion":1,"occurredAt":"2026-08-04T10:12:18.120Z","payload":{"value":${numericLiteral}}}]`,
+            context,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: "22023" });
+    }
+  });
+
   it("normalizes an omitted causationId to null in a direct SQL append", async () => {
     const requestId = id();
     const appended = await pool.query<{
