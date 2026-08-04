@@ -605,6 +605,11 @@ EOF
     this.#connect = undefined;
   }
 
+  async restartKafka(): Promise<void> {
+    if (this.#kafka === undefined) throw new Error("Kafka is not running");
+    await this.#kafka.restart({ timeout: 0 });
+  }
+
   async restartConnect(): Promise<void> {
     await this.stopConnect();
     await this.startConnect();
