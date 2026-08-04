@@ -250,7 +250,7 @@ suite("projection recovery", () => {
     }
   }, 120_000);
 
-  it("keeps a malformed Kafka record as a durable DLQ diagnostic", async () => {
+  it("keeps a Kafka tombstone as a durable DLQ diagnostic", async () => {
     const kafka = new KafkaJS.Kafka({
       kafkaJS: { brokers: [stack.kafkaBroker()] },
     });
@@ -291,12 +291,9 @@ suite("projection recovery", () => {
     await dlq.run({
       eachMessage: async ({ message }) => {
         const value = JSON.parse(message.value?.toString() ?? "{}") as {
-          envelope?: { rawBase64?: string };
+          envelope?: { rawBase64?: string | null };
         };
-        if (
-          value.envelope?.rawBase64 ===
-          Buffer.from("not-json").toString("base64")
-        )
+        if (value.envelope?.rawBase64 === null)
           resolveDlq(message.key?.toString() ?? "");
       },
     });
@@ -320,7 +317,7 @@ suite("projection recovery", () => {
     try {
       await producer.send({
         topic: sourceTopic,
-        messages: [{ key: "malformed", value: "not-json" }],
+        messages: [{ key: "malformed", value: null }],
       });
       await expect(published).resolves.toMatch(
         new RegExp(
