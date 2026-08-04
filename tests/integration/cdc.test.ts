@@ -291,7 +291,10 @@ suite("Debezium CDC", () => {
         });
       });
     };
-    const appendInTransaction = async (commit: boolean): Promise<string> => {
+    const appendInTransaction = async (): Promise<{
+      client: Awaited<ReturnType<typeof pool.connect>>;
+      eventId: string;
+    }> => {
       const client = await pool.connect();
       const requestId = uuidv7();
       try {
@@ -325,23 +328,51 @@ suite("Debezium CDC", () => {
         );
         const eventId = result.rows[0]?.append_v1.events[0]?.eventId;
         if (eventId === undefined) throw new Error("append returned no event");
-        await new Promise((resolve) => setTimeout(resolve, 750));
-        expect(seen.has(eventId)).toBe(false);
-        await client.query(commit ? "COMMIT" : "ROLLBACK");
-        return eventId;
+        return { client, eventId };
       } catch (error) {
         await client.query("ROLLBACK").catch(() => undefined);
-        throw error;
-      } finally {
         client.release();
+        throw error;
       }
     };
+    const appendBarrier = async (phase: string): Promise<string> => {
+      const requestId = uuidv7();
+      const result = await store.append({
+        producerService: "orders-command",
+        namespace: "orders",
+        aggregateType: "Barrier",
+        aggregateId: uuidv7(),
+        requestId,
+        expectedRevision: { kind: "no_stream" },
+        context: {
+          requestId,
+          correlationId: uuidv7(),
+          causationId: null,
+          actor: { kind: "system", subjectRef: "cdc-transaction-test" },
+        },
+        events: [
+          {
+            eventName: "cdc.barrier",
+            schemaVersion: 1,
+            occurredAt: "2026-08-04T10:12:18.120Z",
+            payload: { phase },
+          },
+        ],
+      });
+      return result.events[0]!.eventId;
+    };
     try {
-      const committedEventId = await appendInTransaction(true);
-      await waitFor(committedEventId);
-      const rolledBackEventId = await appendInTransaction(false);
-      await new Promise((resolve) => setTimeout(resolve, 750));
-      expect(seen.has(rolledBackEventId)).toBe(false);
+      const uncommitted = await appendInTransaction();
+      await waitFor(await appendBarrier("while-uncommitted"));
+      expect(seen.has(uncommitted.eventId)).toBe(false);
+      await uncommitted.client.query("COMMIT");
+      uncommitted.client.release();
+      await waitFor(uncommitted.eventId);
+      const rolledBack = await appendInTransaction();
+      await rolledBack.client.query("ROLLBACK");
+      rolledBack.client.release();
+      await waitFor(await appendBarrier("after-rollback"));
+      expect(seen.has(rolledBack.eventId)).toBe(false);
     } finally {
       await consumer.disconnect();
     }
