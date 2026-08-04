@@ -3,17 +3,27 @@ import { describe, expect, it } from "vitest";
 
 describe("production HA topology", () => {
   it("requires synchronous PostgreSQL, synchronized logical slots, and three runtime members", async () => {
-    const [postgres, kafka, runtime, preflight, bootstrap, connector] =
-      await Promise.all(
-        ["postgres.yaml", "kafka.yaml", "runtime.yaml"]
-          .map((file) => readFile(`deploy/production/${file}`, "utf8"))
-          .concat([
-            readFile("deploy/event-store/failover-preflight-job.yaml", "utf8"),
-            readFile("deploy/event-store/bootstrap-job.yaml", "utf8"),
-            readFile("deploy/connector/event-store-live.json", "utf8"),
-          ]),
-      );
+    const [
+      postgres,
+      kafka,
+      runtime,
+      preflight,
+      bootstrap,
+      connector,
+      localPostgres,
+    ] = await Promise.all(
+      ["postgres.yaml", "kafka.yaml", "runtime.yaml"]
+        .map((file) => readFile(`deploy/production/${file}`, "utf8"))
+        .concat([
+          readFile("deploy/event-store/failover-preflight-job.yaml", "utf8"),
+          readFile("deploy/event-store/bootstrap-job.yaml", "utf8"),
+          readFile("deploy/connector/event-store-live.json", "utf8"),
+          readFile("deploy/postgres/postgresql.conf", "utf8"),
+        ]),
+    );
     expect(postgres).toContain("instances: 3");
+    expect(postgres).toContain('track_commit_timestamp: "on"');
+    expect(localPostgres).toContain("track_commit_timestamp = on");
     expect(postgres).toContain("bootstrap:");
     expect(postgres).toContain("database: event_store");
     expect(postgres).toContain("minSyncReplicas: 1");
