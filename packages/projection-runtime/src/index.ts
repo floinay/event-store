@@ -154,6 +154,67 @@ export class ProjectionRebalanceError extends Error {
 /** A test-only process termination marker that must never be retried in-process. */
 export class ProjectionCrashError extends Error {}
 
+/** Prometheus-ready operational counters for a projection worker process. */
+export class ProjectionMetrics {
+  private handlerSeconds = 0;
+  private handlerCount = 0;
+  private transactionSeconds = 0;
+  private transactionCount = 0;
+  private inboxDuplicates = 0;
+  private gapIncidents = 0;
+  private poisonEvents = 0;
+  private pausedPartitions = 0;
+  private checkpointAgeSeconds = 0;
+
+  observeHandler(milliseconds: number): void {
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) return;
+    this.handlerSeconds += milliseconds / 1_000;
+    this.handlerCount += 1;
+  }
+
+  observeTransaction(milliseconds: number): void {
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) return;
+    this.transactionSeconds += milliseconds / 1_000;
+    this.transactionCount += 1;
+  }
+
+  inboxDuplicate(): void {
+    this.inboxDuplicates += 1;
+  }
+
+  gapIncident(): void {
+    this.gapIncidents += 1;
+  }
+
+  poisonEvent(): void {
+    this.poisonEvents += 1;
+  }
+
+  pausePartition(): void {
+    this.pausedPartitions += 1;
+  }
+
+  observeCheckpointAge(recordedAt: string): void {
+    const epoch = Date.parse(recordedAt);
+    if (!Number.isFinite(epoch)) return;
+    this.checkpointAgeSeconds = Math.max(0, (Date.now() - epoch) / 1_000);
+  }
+
+  prometheus(): string {
+    return (
+      `event_store_projection_handler_duration_seconds_sum ${this.handlerSeconds}\n` +
+      `event_store_projection_handler_duration_seconds_count ${this.handlerCount}\n` +
+      `event_store_projection_db_transaction_duration_seconds_sum ${this.transactionSeconds}\n` +
+      `event_store_projection_db_transaction_duration_seconds_count ${this.transactionCount}\n` +
+      `event_store_projection_inbox_duplicates_total ${this.inboxDuplicates}\n` +
+      `event_store_projection_gap_incidents_total ${this.gapIncidents}\n` +
+      `event_store_projection_poison_events_total ${this.poisonEvents}\n` +
+      `event_store_projection_paused_partitions ${this.pausedPartitions}\n` +
+      `event_store_projection_checkpoint_age_seconds ${this.checkpointAgeSeconds}\n`
+    );
+  }
+}
+
 export const projectionRetryDelaysMs = [
   100, 250, 500, 1_000, 2_000, 5_000, 10_000, 30_000,
 ] as const;
@@ -303,6 +364,7 @@ export class ProjectionTransactionRunner {
     private readonly identity: ProjectionIdentity,
     private readonly transform: ProjectionEventTransformer,
     private readonly crashBarrier?: ProjectionCrashBarrier,
+    private readonly metrics?: ProjectionMetrics,
   ) {}
 
   get projectionIdentity(): ProjectionIdentity {
@@ -318,6 +380,7 @@ export class ProjectionTransactionRunner {
       abortSignal?: AbortSignal;
     } = {},
   ): Promise<"processed" | "duplicate"> {
+    const transactionStarted = performance.now();
     if (
       options.transactionTimeoutMs !== undefined &&
       (!Number.isInteger(options.transactionTimeoutMs) ||
@@ -413,12 +476,15 @@ export class ProjectionTransactionRunner {
         checkpoint.rows[0] === undefined
           ? record.offset
           : BigInt(checkpoint.rows[0].next_offset);
-      if (record.offset > nextOffset && !options.allowReadCommittedOffsetGap)
+      if (record.offset > nextOffset && !options.allowReadCommittedOffsetGap) {
+        this.metrics?.gapIncident();
         throw new ProjectionGapError(
           `expected ${nextOffset}, got ${record.offset}`,
         );
+      }
       if (record.offset < nextOffset) {
         await client.query("COMMIT");
+        this.metrics?.inboxDuplicate();
         return "duplicate";
       }
       const inserted = await client.query(
@@ -436,6 +502,7 @@ export class ProjectionTransactionRunner {
       );
       assertNotRebalanced();
       if (inserted.rowCount === 0) {
+        this.metrics?.inboxDuplicate();
         const existing = await client.query<{ envelope_sha256: string }>(
           "SELECT envelope_sha256 FROM projection_runtime.inbox WHERE projection_name=$1 AND generation_id=$2 AND event_id=$3",
           [this.identity.name, this.identity.generationId, event.eventId],
@@ -461,7 +528,9 @@ export class ProjectionTransactionRunner {
               }, options.transactionTimeoutMs);
             }),
           );
+        const handlerStarted = performance.now();
         await Promise.race(races);
+        this.metrics?.observeHandler(performance.now() - handlerStarted);
         assertNotRebalanced();
         await this.crashBarrier?.hit("after_read_model_mutation");
       }
@@ -484,6 +553,7 @@ export class ProjectionTransactionRunner {
       await this.crashBarrier?.hit("after_checkpoint_update");
       assertNotRebalanced();
       await client.query("COMMIT");
+      this.metrics?.observeCheckpointAge(event.recordedAt);
       await this.crashBarrier?.hit("after_database_commit");
       return inserted.rowCount === 1 ? "processed" : "duplicate";
     } catch (error) {
@@ -496,6 +566,7 @@ export class ProjectionTransactionRunner {
       await client.query("ROLLBACK").catch(() => undefined);
       throw error;
     } finally {
+      this.metrics?.observeTransaction(performance.now() - transactionStarted);
       if (timeout !== undefined) clearTimeout(timeout);
       options.abortSignal?.removeEventListener("abort", onExternalAbort);
       if (discardClient) {

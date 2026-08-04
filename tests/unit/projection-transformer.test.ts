@@ -4,6 +4,7 @@ import { uuidv7 } from "@event-store/contracts";
 import {
   createProjectionEventTransformer,
   isProjectionInfrastructureEvent,
+  ProjectionMetrics,
   ProjectionPayloadSchemas,
   ProjectionUnknownSchemaError,
 } from "@event-store/projection-runtime";
@@ -34,6 +35,25 @@ const event = () => {
 };
 
 describe("projection event transformer", () => {
+  it("exports projection reliability metrics", () => {
+    const metrics = new ProjectionMetrics();
+    metrics.observeHandler(5);
+    metrics.observeTransaction(7);
+    metrics.inboxDuplicate();
+    metrics.gapIncident();
+    metrics.poisonEvent();
+    metrics.pausePartition();
+    metrics.observeCheckpointAge(new Date(Date.now() - 1_000).toISOString());
+    const output = metrics.prometheus();
+    expect(output).toContain(
+      "event_store_projection_handler_duration_seconds_count 1",
+    );
+    expect(output).toContain("event_store_projection_inbox_duplicates_total 1");
+    expect(output).toContain("event_store_projection_gap_incidents_total 1");
+    expect(output).toContain("event_store_projection_poison_events_total 1");
+    expect(output).toContain("event_store_projection_paused_partitions 1");
+  });
+
   it("identifies the reserved CDC latency probe as a handler-free record", () => {
     const probe = event();
     expect(

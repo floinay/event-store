@@ -4,6 +4,7 @@ import type {
   ProjectionCheckpointStore,
   ProjectionFailureReporter,
   ProjectionHandler,
+  ProjectionMetrics,
   ProjectionTransactionRunner,
 } from "./index.js";
 import {
@@ -78,6 +79,7 @@ export class KafkaProjectionRunner {
     private readonly failureReporter: ProjectionFailureReporter,
     private readonly dlqTopic = "event-store.projection-dlq.v1",
     private readonly crashBarrier?: ProjectionCrashBarrier,
+    private readonly metrics?: ProjectionMetrics,
   ) {}
 
   async start(): Promise<KafkaJS.Consumer> {
@@ -364,6 +366,8 @@ export class KafkaProjectionRunner {
             }
             if (publishError !== undefined) throw publishError;
           } finally {
+            this.metrics?.poisonEvent();
+            this.metrics?.pausePartition();
             pause();
           }
           throw failure;
