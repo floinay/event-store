@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   replayConnectorConfig,
+  recoveryConnectorConfig,
+  recoveryConnectorName,
+  recoverySlotName,
   replaySlotName,
   replayTopicName,
 } from "@event-store/replay";
@@ -44,6 +47,35 @@ describe("replay topic", () => {
     expect(() => replayTopicName("a".repeat(45))).toThrow(
       "at most 44 characters",
     );
+  });
+});
+
+describe("slot-loss recovery connector", () => {
+  it("uses an isolated failover slot and restores canonical live delivery", () => {
+    const config = recoveryConnectorConfig("slot-loss-aug-2026", {
+      hostname: "postgres",
+      port: 5432,
+      user: "event_store_cdc",
+      password: "secret",
+      dbname: "event_store",
+    });
+    expect(recoverySlotName("slot-loss-aug-2026")).toBe(
+      "event_store_recovery_slot_loss_aug_2026",
+    );
+    expect(recoveryConnectorName("slot-loss-aug-2026")).toBe(
+      "event-store-recovery-slot-loss-aug-2026",
+    );
+    expect(config).toMatchObject({
+      "slot.drop.on.stop": "false",
+      "slot.failover": "true",
+      "snapshot.mode": "initial",
+      "lsn.flush.mode": "connector",
+      "offset.mismatch.strategy": "trust_offset",
+      "errors.tolerance": "none",
+      "transforms.outbox.table.field.event.payload": "event_envelope_kafka",
+      "transforms.outbox.route.topic.replacement": "$1.events.v1",
+      "transforms.outbox.table.op.invalid.behavior": "fatal",
+    });
   });
 });
 

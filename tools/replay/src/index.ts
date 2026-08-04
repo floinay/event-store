@@ -59,6 +59,14 @@ export interface ReplayStartOptions {
   connectorDatabase: Parameters<typeof replayConnectorConfig>[1];
 }
 
+export interface RecoveryStartOptions {
+  identity: ReplayIdentity;
+  coordinatorDatabaseUrl: string;
+  appendDatabaseUrl: string;
+  connectorUrl: string;
+  connectorDatabase: Parameters<typeof recoveryConnectorConfig>[1];
+}
+
 /** Runtime-owned evidence required before a recovered CDC slot can take writes. */
 export interface RecoveryCutoverVerification {
   projectionName: string;
@@ -88,6 +96,17 @@ export function replaySlotName(replayId: string): string {
 export function replayTopicName(replayId: string): string {
   assertReplayId(replayId);
   return `event-store.replay.${replayId}.v1`;
+}
+
+/** PostgreSQL replication-slot names have a 63-byte limit. */
+export function recoverySlotName(recoveryId: string): string {
+  assertReplayId(recoveryId);
+  return `event_store_recovery_${recoveryId.replaceAll("-", "_")}`;
+}
+
+export function recoveryConnectorName(recoveryId: string): string {
+  assertReplayId(recoveryId);
+  return `event-store-recovery-${recoveryId}`;
 }
 
 /** Creates and verifies the fixed partition topology required by replay barriers. */
@@ -580,9 +599,15 @@ export class RecoveryCutoverCoordinator {
         "io.debezium.connector.postgresql.PostgresConnector" ||
       config["slot.name"] !== slotName ||
       config["table.include.list"] !== "event_store.events" ||
+      config["slot.drop.on.stop"] !== "false" ||
+      config["slot.failover"] !== "true" ||
+      config["lsn.flush.mode"] !== "connector" ||
+      config["offset.mismatch.strategy"] !== "trust_offset" ||
+      config["errors.tolerance"] !== "none" ||
       config["transforms.outbox.table.field.event.payload"] !==
         "event_envelope_kafka" ||
       config["transforms.outbox.route.topic.replacement"] !== "$1.events.v1" ||
+      config["transforms.outbox.table.op.invalid.behavior"] !== "fatal" ||
       config["exactly.once.support"] !== "required"
     )
       throw new Error(
@@ -644,6 +669,141 @@ export async function startReplay(
     await coordinatorPool.end();
     await appendPool.end();
   }
+}
+
+/**
+ * Rebuilds a lost CDC cursor from a durable table snapshot. The caller must
+ * keep append admission closed until `RecoveryCutoverCoordinator.activate()`
+ * verifies barriers, the consumer group, and the connector configuration.
+ */
+export async function startRecovery(
+  options: RecoveryStartOptions,
+): Promise<ReplayBarrier[]> {
+  const coordinatorPool = new Pool({
+    connectionString: options.coordinatorDatabaseUrl,
+  });
+  const appendPool = new Pool({ connectionString: options.appendDatabaseUrl });
+  const slotName = recoverySlotName(options.identity.replayId);
+  const connectorName = recoveryConnectorName(options.identity.replayId);
+  try {
+    await coordinatorPool.query(
+      "SELECT pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
+      [slotName],
+    );
+    const response = await fetch(
+      `${options.connectorUrl}/connectors/${connectorName}/config`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          recoveryConnectorConfig(
+            options.identity.replayId,
+            options.connectorDatabase,
+          ),
+        ),
+      },
+    );
+    if (!response.ok)
+      throw new Error(
+        `recovery connector creation failed: ${await response.text()}`,
+      );
+    await waitForConnector(options.connectorUrl, connectorName);
+    return await appendReplayBarriers(
+      new PostgresEventStore(appendPool),
+      options.identity.replayId,
+    );
+  } finally {
+    await coordinatorPool.end();
+    await appendPool.end();
+  }
+}
+
+async function waitForConnector(
+  connectorUrl: string,
+  connectorName: string,
+): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    const response = await fetch(
+      `${connectorUrl}/connectors/${connectorName}/status`,
+    );
+    if (response.ok) {
+      const status = (await response.json()) as {
+        connector?: { state?: string };
+        tasks?: { state?: string }[];
+      };
+      if (
+        status.connector?.state === "RUNNING" &&
+        status.tasks?.length === 1 &&
+        status.tasks[0]?.state === "RUNNING"
+      )
+        return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`recovery connector ${connectorName} did not become RUNNING`);
+}
+
+/** Recovery CDC streams a full snapshot and then canonical live events. */
+export function recoveryConnectorConfig(
+  recoveryId: string,
+  database: {
+    hostname: string;
+    port: number;
+    user: string;
+    password: string;
+    dbname: string;
+  },
+): Record<string, string> {
+  assertReplayId(recoveryId);
+  const prefix = recoveryConnectorName(recoveryId);
+  return {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": database.hostname,
+    "database.port": String(database.port),
+    "database.user": database.user,
+    "database.password": database.password,
+    "database.dbname": database.dbname,
+    "topic.prefix": prefix,
+    "plugin.name": "pgoutput",
+    "publication.name": "event_store_events",
+    "publication.autocreate.mode": "disabled",
+    "slot.name": recoverySlotName(recoveryId),
+    "slot.drop.on.stop": "false",
+    "slot.failover": "true",
+    "schema.include.list": "event_store",
+    "table.include.list": "event_store.events",
+    "snapshot.mode": "initial",
+    "snapshot.select.statement.overrides": "event_store.events",
+    "snapshot.select.statement.overrides.event_store.events":
+      "SELECT * FROM event_store.events ORDER BY event_number",
+    "poll.interval.ms": "5",
+    "lsn.flush.mode": "connector",
+    "offset.mismatch.strategy": "trust_offset",
+    "exactly.once.support": "required",
+    "transaction.boundary": "poll",
+    "errors.tolerance": "none",
+    predicates: "isCanonicalEvents",
+    "predicates.isCanonicalEvents.type":
+      "org.apache.kafka.connect.transforms.predicates.TopicNameMatches",
+    "predicates.isCanonicalEvents.pattern": `${prefix}\\.event_store\\.events`,
+    transforms: "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.predicate": "isCanonicalEvents",
+    "transforms.outbox.table.field.event.id": "event_id",
+    "transforms.outbox.table.field.event.key": "partition_key",
+    "transforms.outbox.table.field.event.type": "event_name",
+    "transforms.outbox.table.field.event.payload": "event_envelope_kafka",
+    "transforms.outbox.table.field.event.timestamp": "recorded_at_kafka",
+    "transforms.outbox.route.by.field": "topic_route",
+    "transforms.outbox.route.topic.regex": "(.*)",
+    "transforms.outbox.route.topic.replacement": "$1.events.v1",
+    "transforms.outbox.table.expand.json.payload": "false",
+    "transforms.outbox.table.op.invalid.behavior": "fatal",
+    "transforms.outbox.table.fields.additional.placement":
+      "event_id:header:id,event_name:header:type,envelope_sha256:header:envelopeHash,namespace:header:namespace,aggregate_type:header:aggregateType,stream_revision:header:streamRevision",
+  };
 }
 
 export function replayConnectorConfig(
@@ -728,7 +888,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const projectionName = process.env.REPLAY_PROJECTION_NAME;
   const generationId = process.env.REPLAY_GENERATION_ID;
   if (
-    (action !== "start" && action !== "activate") ||
+    action !== "start" &&
+    action !== "activate" &&
+    action !== "recovery-start" &&
+    action !== "recovery-activate" ||
     replayId === undefined ||
     coordinatorDatabaseUrl === undefined ||
     connectorUrl === undefined ||
@@ -737,17 +900,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     generationId === undefined
   )
     throw new Error(
-      "REPLAY_ACTION=start|activate, REPLAY_ID, REPLAY_COORDINATOR_DATABASE_URL, CONNECT_URL, KAFKA_BROKERS, REPLAY_PROJECTION_NAME and REPLAY_GENERATION_ID are required",
+      "REPLAY_ACTION=start|activate|recovery-start|recovery-activate, REPLAY_ID, REPLAY_COORDINATOR_DATABASE_URL, CONNECT_URL, KAFKA_BROKERS, REPLAY_PROJECTION_NAME and REPLAY_GENERATION_ID are required",
     );
   const identity = { replayId, projectionName, generationId };
-  if (action === "start") {
+  if (action === "start" || action === "recovery-start") {
     const raw = process.env.REPLAY_DATABASE_JSON;
     const appendDatabaseUrl = process.env.REPLAY_APPEND_DATABASE_URL;
     if (raw === undefined || appendDatabaseUrl === undefined)
       throw new Error(
         "REPLAY_DATABASE_JSON and REPLAY_APPEND_DATABASE_URL are required for REPLAY_ACTION=start",
       );
-    const barriers = await startReplay({
+    const options = {
       identity,
       coordinatorDatabaseUrl,
       appendDatabaseUrl,
@@ -756,7 +919,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       connectorDatabase: JSON.parse(raw) as Parameters<
         typeof replayConnectorConfig
       >[1],
-    });
+    };
+    const barriers =
+      action === "start" ? await startReplay(options) : await startRecovery(options);
     console.log(JSON.stringify({ action, ...identity, barriers }, null, 2));
   } else {
     const verificationModule = process.env.REPLAY_VERIFICATION_MODULE;
@@ -767,11 +932,29 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const pool = new Pool({ connectionString: coordinatorDatabaseUrl });
     const coordinator = new ReplayCoordinator(pool, connectorUrl, brokers);
     try {
-      await coordinator.activate(
-        identity,
-        await loadReplayVerification(verificationModule, identity),
-      );
-      await coordinator.teardown(identity);
+      const verification = await loadReplayVerification(verificationModule, identity);
+      if (action === "activate") {
+        await coordinator.activate(identity, verification);
+        await coordinator.teardown(identity);
+      } else {
+        const rawBudget = process.env.RECOVERY_WAL_BUDGET_BYTES;
+        if (rawBudget === undefined)
+          throw new Error(
+            "RECOVERY_WAL_BUDGET_BYTES is required for REPLAY_ACTION=recovery-activate",
+          );
+        await new RecoveryCutoverCoordinator(pool, connectorUrl, brokers).activate(
+          recoverySlotName(replayId),
+          recoveryConnectorName(replayId),
+          BigInt(rawBudget),
+          {
+            projectionName,
+            generationId,
+            replayId,
+            consumerGroupId: verification.consumerGroupId,
+            kafkaLag: verification.kafkaLag,
+          },
+        );
+      }
     } finally {
       await pool.end();
     }
