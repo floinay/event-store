@@ -116,6 +116,7 @@ spec:
                 value: _connect-event-store-offsets,
               }
             - { name: STATUS_STORAGE_TOPIC, value: _connect-event-store-status }
+            - { name: OFFSET_FLUSH_INTERVAL_MS, value: "1000" }
             - { name: CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR, value: "3" }
             - { name: CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR, value: "3" }
             - { name: CONNECT_STATUS_STORAGE_REPLICATION_FACTOR, value: "3" }

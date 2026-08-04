@@ -19,6 +19,7 @@
     "table.include.list": "event_store.events",
     "snapshot.mode": "no_data",
     "lsn.flush.mode": "connector",
+    "status.update.interval.ms": "1000",
     "offset.mismatch.strategy": "trust_offset",
     "exactly.once.support": "required",
     "transaction.boundary": "poll",

@@ -66,6 +66,7 @@ services:
       CONFIG_STORAGE_TOPIC: _connect-event-store-configs
       OFFSET_STORAGE_TOPIC: _connect-event-store-offsets
       STATUS_STORAGE_TOPIC: _connect-event-store-status
+      OFFSET_FLUSH_INTERVAL_MS: "1000"
       CONFIG_STORAGE_REPLICATION_FACTOR: 1
       OFFSET_STORAGE_REPLICATION_FACTOR: 1
       STATUS_STORAGE_REPLICATION_FACTOR: 1

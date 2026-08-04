@@ -27,6 +27,7 @@ export class EventStoreStack {
   #connectUsesKafkaProxy = false;
   #productionResources = false;
   #walBudgetBytes = 8n * 1024n ** 3n;
+  #slotWalKeepBytes = 8n * 1024n ** 3n;
 
   async createPitrBaseBackup(): Promise<{
     basePath: string;
@@ -154,13 +155,24 @@ EOF
       connectKafkaProxy?: boolean;
       productionResources?: boolean;
       walBudgetBytes?: bigint;
+      /**
+       * Test-only physical WAL retention ceiling. It can exceed the admission
+       * budget so a test can exercise admission before PostgreSQL invalidates
+       * the logical slot.
+       */
+      slotWalKeepBytes?: bigint;
     } = {},
   ): Promise<void> {
     if (options.walBudgetBytes !== undefined && options.walBudgetBytes < 1n)
       throw new TypeError("walBudgetBytes must be a positive bigint");
+    if (options.slotWalKeepBytes !== undefined && options.slotWalKeepBytes < 1n)
+      throw new TypeError("slotWalKeepBytes must be a positive bigint");
     this.#walBudgetBytes = options.walBudgetBytes ?? 8n * 1024n ** 3n;
+    this.#slotWalKeepBytes = options.slotWalKeepBytes ?? this.#walBudgetBytes;
+    if (this.#slotWalKeepBytes < this.#walBudgetBytes)
+      throw new TypeError("slotWalKeepBytes must not be below walBudgetBytes");
     const walKeepSizeMb =
-      (this.#walBudgetBytes + 1024n ** 2n - 1n) / 1024n ** 2n;
+      (this.#slotWalKeepBytes + 1024n ** 2n - 1n) / 1024n ** 2n;
     this.#productionResources = options.productionResources === true;
     this.#network = await new Network().start();
     this.#postgres = await new GenericContainer("postgres:18.4-bookworm")
@@ -186,7 +198,10 @@ EOF
         "-c",
         "archive_mode=on",
         "-c",
-        "archive_timeout=1s",
+        // PITR tests explicitly switch WAL. A one-second archive timeout
+        // creates empty 16 MiB segments and corrupts retained-WAL recovery
+        // measurements while a test is waiting for CDC catch-up.
+        "archive_timeout=1h",
         "-c",
         "archive_command=mkdir -p /var/lib/postgresql/archive && test ! -f /var/lib/postgresql/archive/%f && cp %p /var/lib/postgresql/archive/%f",
       ])
@@ -342,6 +357,7 @@ EOF
         CONFIG_STORAGE_REPLICATION_FACTOR: "1",
         OFFSET_STORAGE_REPLICATION_FACTOR: "1",
         STATUS_STORAGE_REPLICATION_FACTOR: "1",
+        OFFSET_FLUSH_INTERVAL_MS: "1000",
         KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter",
         VALUE_CONVERTER: "org.apache.kafka.connect.storage.StringConverter",
         HEADER_CONVERTER:
@@ -398,6 +414,7 @@ EOF
           "max.queue.size": "8192",
           "max.queue.size.in.bytes": "268435456",
           "lsn.flush.mode": "connector",
+          "status.update.interval.ms": "1000",
           "offset.mismatch.strategy": "trust_offset",
           "exactly.once.support": "required",
           "transaction.boundary": "poll",
@@ -495,6 +512,7 @@ EOF
           "max.queue.size": "8192",
           "max.queue.size.in.bytes": "268435456",
           "lsn.flush.mode": "connector",
+          "status.update.interval.ms": "1000",
           "offset.mismatch.strategy": "trust_offset",
           "exactly.once.support": "required",
           "transaction.boundary": "poll",
