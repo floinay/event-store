@@ -123,6 +123,7 @@ export class CommitToConsumerLatencyHistogram {
 
 interface CdcLatencyProbe {
   up: (timelineId?: number) => boolean;
+  warmingUp: () => boolean;
   stop: () => Promise<void>;
 }
 
@@ -230,6 +231,7 @@ async function startCdcLatencyProbe(
       (timelineId === undefined || lastMeasurementTimelineId === timelineId) &&
       Date.now() - lastMeasurementEpochMs <= staleAfterMs &&
       lastFailureEpochMs === undefined,
+    warmingUp: () => connected && lastMeasurementEpochMs === undefined,
     stop: async () => {
       connected = false;
       clearInterval(timer);
@@ -560,13 +562,19 @@ export async function startServer(
       throw new Error("CDC latency probe has not proved end-to-end delivery");
     return timelineId;
   };
-  const reconcileCdcDeliveryAdmission = async (): Promise<void> => {
+  const reconcileCdcDeliveryAdmission = async (): Promise<boolean> => {
+    // The restart fence is already closed. Until the first probe arrives we
+    // have no failed delivery to reconcile, only an incomplete measurement.
+    // Returning false keeps readiness at 503 without creating an incident
+    // that the first successful measurement could never clear.
+    if (latencyProbe?.warmingUp()) return false;
     try {
       const timelineId = await assertCdcDeliveryHealthy();
       await pool.query(
         "SELECT event_store.set_cdc_delivery_health_on_timeline($1)",
         [timelineId],
       );
+      return true;
     } catch (error) {
       // This is durable and is checked inside append_v1, so existing gRPC
       // connections cannot continue writing after the next failed probe.
@@ -622,7 +630,8 @@ export async function startServer(
             }
             // Readiness also drives the durable append fence.  A 503 alone is
             // insufficient because already-open gRPC connections can append.
-            await reconcileCdcDeliveryAdmission();
+            if (!(await reconcileCdcDeliveryAdmission()))
+              throw new Error("CDC latency probe is warming up");
             response.writeHead(200).end("ready\n");
           })().catch(() => response.writeHead(503).end("not ready\n"));
         });

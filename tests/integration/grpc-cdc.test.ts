@@ -189,8 +189,30 @@ suite("gRPC to CDC", () => {
     process.env.HTTP_LISTEN_ADDRESS = "127.0.0.1:50164";
     process.env.KAFKA_BROKERS = stack.kafkaBroker();
     process.env.CDC_LATENCY_PROBE_INTERVAL_MS = "1000";
+    await stack.setConnectKafkaEnabled(false);
     const probeServer = await startServer();
     try {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const warmupPool = await stack.pool();
+      try {
+        await expect(
+          warmupPool.query<{ cdc_reconciliation_required: boolean }>(
+            "SELECT cdc_reconciliation_required FROM event_store.runtime_config WHERE singleton",
+          ),
+        ).resolves.toMatchObject({
+          rows: [{ cdc_reconciliation_required: false }],
+        });
+      } finally {
+        await warmupPool.end();
+      }
+      await expect(
+        fetch("http://127.0.0.1:50164/readyz"),
+      ).resolves.toMatchObject({ status: 503 });
+      await stack.setConnectKafkaEnabled(true);
+      await eventually(
+        async () =>
+          (await fetch("http://127.0.0.1:50164/readyz")).status === 200,
+      );
       const deadline = Date.now() + 30_000;
       let metrics = "";
       while (Date.now() < deadline) {
