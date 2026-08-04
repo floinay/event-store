@@ -21,6 +21,7 @@ export class EventStoreStack {
   #connect?: Awaited<ReturnType<GenericContainer["start"]>>;
   #toxiproxy?: Awaited<ReturnType<ToxiProxyContainer["start"]>>;
   #postgresConnectProxy?: CreatedProxy;
+  #consumerPostgresProxy?: CreatedProxy;
   #connectKafkaProxy?: CreatedProxy;
   #connectUsesToxiproxy = false;
   #connectUsesKafkaProxy = false;
@@ -135,6 +136,15 @@ EOF
     return `http://${this.#connect.getHost()}:${this.#connect.getMappedPort(8083)}`;
   }
 
+  get consumerDatabaseUrl(): string {
+    if (
+      this.#toxiproxy === undefined ||
+      this.#consumerPostgresProxy === undefined
+    )
+      throw new Error("consumer PostgreSQL Toxiproxy is not configured");
+    return `postgresql://postgres:postgres@${this.#toxiproxy.getHost()}:${this.#toxiproxy.getMappedPort(8668)}/event_store`;
+  }
+
   async start(
     options: {
       cdc?: boolean;
@@ -195,6 +205,7 @@ EOF
       )
         .withNetwork(this.#network)
         .withNetworkAliases("toxiproxy")
+        .withExposedPorts(8668)
         .start();
       this.#postgresConnectProxy = await this.#toxiproxy.createProxy({
         name: "postgres-connect",
@@ -204,6 +215,11 @@ EOF
         name: "connect-kafka",
         listen: "0.0.0.0:8667",
         upstream: "kafka:29092",
+      });
+      this.#consumerPostgresProxy = await this.#toxiproxy.createProxy({
+        name: "consumer-postgres",
+        listen: "0.0.0.0:8668",
+        upstream: "postgres:5432",
       });
     }
     const database = new Pool({ connectionString: this.databaseUrl });
@@ -564,6 +580,12 @@ EOF
     if (this.#postgresConnectProxy === undefined)
       throw new Error("Postgres-to-Connect Toxiproxy is not configured");
     await this.#postgresConnectProxy.setEnabled(enabled);
+  }
+
+  async setConsumerPostgresEnabled(enabled: boolean): Promise<void> {
+    if (this.#consumerPostgresProxy === undefined)
+      throw new Error("consumer-to-PostgreSQL Toxiproxy is not configured");
+    await this.#consumerPostgresProxy.setEnabled(enabled);
   }
 
   async addPostgresConnectLatency(
