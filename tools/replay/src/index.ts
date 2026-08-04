@@ -198,7 +198,8 @@ export class ReplayCoordinator {
   async createGeneration(identity: ReplayIdentity): Promise<void> {
     await this.pool.query(
       `INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at)
-       VALUES ($1,$2,'building',clock_timestamp())`,
+       VALUES ($1,$2,'building',clock_timestamp())
+       ON CONFLICT (projection_name,generation_id) DO NOTHING`,
       [identity.projectionName, identity.generationId],
     );
   }
