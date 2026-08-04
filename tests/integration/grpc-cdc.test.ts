@@ -11,6 +11,18 @@ import { EventStoreStack } from "../fixtures/event-store-stack.js";
 
 const suite = process.env.RUN_INTEGRATION === "true" ? describe : describe.skip;
 
+async function eventually(
+  condition: () => boolean | Promise<boolean>,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("condition did not become true within timeout");
+}
+
 interface AppendClient extends grpc.Client {
   AppendToStream(
     request: Record<string, unknown>,
@@ -646,6 +658,13 @@ suite("gRPC to CDC", () => {
     const pool = await stack.pool();
     const directRequestId = uuidv7();
     const grpcRequestId = uuidv7();
+    const reconciliationProjection = "connect-crash-reconciliation";
+    const reconciliationGeneration = uuidv7();
+    await pool.query(
+      `INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at)
+       VALUES ($1,$2,'active',clock_timestamp())`,
+      [reconciliationProjection, reconciliationGeneration],
+    );
     const kafka = new KafkaJS.Kafka({
       kafkaJS: { brokers: [stack.kafkaBroker()] },
     });
@@ -695,10 +714,27 @@ suite("gRPC to CDC", () => {
           30_000,
         );
         void consumer.run({
-          eachMessage: async ({ message }) => {
+          eachMessage: async ({ partition, message }) => {
             const event = JSON.parse(message.value?.toString() ?? "{}") as {
+              eventId?: string;
               context?: { requestId?: string };
             };
+            const envelopeHash = message.headers?.envelopeHash?.toString();
+            if (event.eventId !== undefined && envelopeHash !== undefined)
+              await pool.query(
+                `INSERT INTO projection_runtime.inbox(
+                   projection_name,generation_id,event_id,envelope_sha256,topic_name,partition_no,kafka_offset,processed_at
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,clock_timestamp()) ON CONFLICT DO NOTHING`,
+                [
+                  reconciliationProjection,
+                  reconciliationGeneration,
+                  event.eventId,
+                  envelopeHash,
+                  "event-store.events.v1",
+                  partition,
+                  message.offset,
+                ],
+              );
             const requestId = event.context?.requestId;
             if (requestId === directRequestId || requestId === grpcRequestId)
               seen.add(requestId);
@@ -775,10 +811,36 @@ suite("gRPC to CDC", () => {
         code: grpc.status.RESOURCE_EXHAUSTED,
       });
       await stack.restartConnect();
+      await eventually(async () => {
+        const missing = await pool.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM event_store.events e
+           WHERE NOT EXISTS (
+             SELECT 1 FROM projection_runtime.inbox i
+              WHERE i.projection_name=$1 AND i.generation_id=$2 AND i.event_id=e.event_id
+           )`,
+          [reconciliationProjection, reconciliationGeneration],
+        );
+        return missing.rows[0]?.count === 0;
+      });
+      await expect(
+        fetch("http://127.0.0.1:50161/readyz"),
+      ).resolves.toMatchObject({
+        status: 503,
+      });
+      await pool.query(
+        "SELECT event_store.record_cdc_timeline_reconciliation($1,$2,event_store.current_timeline_id())",
+        [reconciliationProjection, reconciliationGeneration],
+      );
+      await eventually(async () => {
+        const slot = await pool.query<{ active: boolean }>(
+          "SELECT active FROM pg_replication_slots WHERE slot_name='event_store_live'",
+        );
+        return slot.rows[0]?.active === true;
+      });
       const readyDeadline = Date.now() + 30_000;
       while (Date.now() < readyDeadline) {
-        const readiness = await fetch("http://127.0.0.1:50161/readyz");
-        if (readiness.status === 200) break;
+        if ((await fetch("http://127.0.0.1:50161/readyz")).status === 200)
+          break;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       await expect(
