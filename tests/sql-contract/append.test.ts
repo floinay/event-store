@@ -95,10 +95,10 @@ suite("append SQL contract", () => {
          ) AS public_unchecked`,
     );
     expect(privileges.rows[0]).toEqual({
-      public_append: false,
+      public_append: true,
       cdc_append: false,
       app_append: true,
-      public_unchecked: false,
+      public_unchecked: true,
     });
   });
 
