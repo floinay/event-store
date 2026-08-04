@@ -40,6 +40,10 @@ spec:
               value: http://event-store-connect:8083
             - name: CONNECT_METRICS_PORT
               value: "9404"
+            - name: KAFKA_BROKERS
+              value: event-store-kafka-kafka-bootstrap:9092
+            - name: KAFKA_LIVE_MIN_ISR
+              value: "2"
             - name: HTTP_LISTEN_ADDRESS
               value: 0.0.0.0:8080
             - name: CDC_WAL_BUDGET_BYTES

@@ -8,6 +8,7 @@
   "dependencies": {
     "@event-store/contracts": "*",
     "@event-store/postgres-store": "*",
+    "@confluentinc/kafka-javascript": "1.10.0",
     "@grpc/grpc-js": "1.14.4",
     "@grpc/proto-loader": "0.8.0",
     "pg": "8.22.0",

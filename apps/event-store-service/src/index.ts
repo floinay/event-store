@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { KafkaJS } from "@confluentinc/kafka-javascript";
 
 export function connectQueueRatio(metrics: string, connectorName: string): number {
   const metric = (name: string): number => {
@@ -19,6 +20,33 @@ export function connectQueueRatio(metrics: string, connectorName: string): numbe
   const total = metric("event_store_connect_queue_total_capacity");
   if (total <= 0) throw new Error("invalid Connect queue total capacity");
   return remaining / total;
+}
+
+export async function verifyKafkaReadiness(
+  brokers: readonly string[],
+  topicName: string,
+  minInSyncReplicas: number,
+): Promise<void> {
+  if (brokers.length === 0 || brokers.some((broker) => broker === ""))
+    throw new Error("KAFKA_BROKERS must contain at least one broker");
+  if (!Number.isInteger(minInSyncReplicas) || minInSyncReplicas < 1)
+    throw new Error("KAFKA_LIVE_MIN_ISR must be a positive integer");
+  const admin = new KafkaJS.Kafka({ kafkaJS: { brokers: [...brokers] } }).admin();
+  await admin.connect();
+  try {
+    const metadata = await admin.fetchTopicMetadata({ topics: [topicName] });
+    const topic = metadata.find((entry) => entry.name === topicName);
+    if (topic === undefined || topic.partitions.length === 0)
+      throw new Error(`Kafka live topic ${topicName} is unavailable`);
+    for (const partition of topic.partitions) {
+      if (partition.isr.length < minInSyncReplicas)
+        throw new Error(
+          `Kafka live topic ${topicName}/${partition.partitionId} has ISR=${partition.isr.length}; requires ${minInSyncReplicas}`,
+        );
+    }
+  } finally {
+    await admin.disconnect();
+  }
 }
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
@@ -228,6 +256,9 @@ export async function startServer(): Promise<grpc.Server> {
   };
   const connectUrl = process.env.CONNECT_URL;
   const connectMetricsPort = process.env.CONNECT_METRICS_PORT;
+  const kafkaBrokers = process.env.KAFKA_BROKERS?.split(",");
+  const kafkaTopic = process.env.KAFKA_LIVE_TOPIC ?? "event-store.events.v1";
+  const kafkaMinIsr = Number(process.env.KAFKA_LIVE_MIN_ISR ?? "2");
   const healthAddress = process.env.HTTP_LISTEN_ADDRESS;
   const health =
     healthAddress === undefined
@@ -295,6 +326,12 @@ export async function startServer(): Promise<grpc.Server> {
                   throw new Error("CDC Connect queue is saturated");
               }
             }
+            if (kafkaBrokers !== undefined)
+              await verifyKafkaReadiness(
+                kafkaBrokers,
+                kafkaTopic,
+                kafkaMinIsr,
+              );
             response.writeHead(200).end("ready\n");
           })().catch(() => response.writeHead(503).end("not ready\n"));
         });
