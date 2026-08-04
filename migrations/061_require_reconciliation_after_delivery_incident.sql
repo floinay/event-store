@@ -25,7 +25,10 @@ SECURITY DEFINER
 SET search_path = pg_catalog, event_store
 AS $$
 BEGIN
-  UPDATE event_store.runtime_config SET cdc_delivery_healthy=false WHERE singleton;
+  UPDATE event_store.runtime_config
+     SET cdc_reconciliation_required=cdc_reconciliation_required OR NOT cdc_delivery_healthy,
+         cdc_delivery_healthy=false
+   WHERE singleton;
 END $$;
 
 REVOKE ALL ON FUNCTION event_store.close_cdc_delivery_health_for_restart() FROM PUBLIC;

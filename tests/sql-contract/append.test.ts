@@ -645,6 +645,23 @@ suite("append SQL contract", () => {
     }
   });
 
+  it("requires reconciliation when a service starts while delivery is already fenced", async () => {
+    await pool.query(
+      "UPDATE event_store.runtime_config SET cdc_delivery_healthy=false,cdc_reconciliation_required=false WHERE singleton",
+    );
+    await pool.query(
+      "SELECT event_store.close_cdc_delivery_health_for_restart()",
+    );
+    await expect(
+      pool.query<{ cdc_reconciliation_required: boolean }>(
+        "SELECT cdc_reconciliation_required FROM event_store.runtime_config WHERE singleton",
+      ),
+    ).resolves.toMatchObject({ rows: [{ cdc_reconciliation_required: true }] });
+    await pool.query(
+      "UPDATE event_store.runtime_config SET cdc_reconciliation_required=false WHERE singleton",
+    );
+  });
+
   it("rejects append admission for a non-failover CDC slot", async () => {
     const original = await pool.query<{ cdc_slot_name: string }>(
       "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
