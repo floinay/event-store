@@ -17,3 +17,8 @@ spec:
                 secretKeyRef: { name: event-store-cluster-admin, key: database-url }
             - name: MIGRATE_CLUSTER
               value: "true"
+            - name: EVENT_STORE_ROLE_PASSWORDS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: event-store-role-passwords
+                  key: role-passwords-json

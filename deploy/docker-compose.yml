@@ -92,6 +92,7 @@ services:
       CONNECTOR_CONFIG_PATH: /app/deploy/connector/event-store-live.json
       TOPICS_CONFIG_PATH: /app/deploy/kafka/topics.local.json
       MIGRATE_CLUSTER: "true"
+      EVENT_STORE_ROLE_PASSWORDS_JSON: '{"event_store_cdc":"${EVENT_STORE_CDC_PASSWORD:?set EVENT_STORE_CDC_PASSWORD}"}'
 volumes:
   postgres-data:
   postgres-wal-archive:

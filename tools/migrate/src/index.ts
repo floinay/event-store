@@ -9,6 +9,28 @@ interface AppliedMigration {
   checksum: string;
 }
 
+const loginRoles = new Set([
+  "event_store_migrator",
+  "event_store_app",
+  "event_store_cdc",
+  "projection_worker",
+]);
+
+function rolePasswordsFromEnvironment(): ReadonlyMap<string, string> {
+  const encoded = process.env.EVENT_STORE_ROLE_PASSWORDS_JSON;
+  if (encoded === undefined) return new Map();
+  const parsed: unknown = JSON.parse(encoded);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error("EVENT_STORE_ROLE_PASSWORDS_JSON must be an object");
+  const passwords = new Map<string, string>();
+  for (const [role, password] of Object.entries(parsed)) {
+    if (!loginRoles.has(role) || typeof password !== "string" || password === "")
+      throw new Error("invalid Event Store role password secret");
+    passwords.set(role, password);
+  }
+  return passwords;
+}
+
 export async function migrate(
   databaseUrl: string,
   includeClusterMigration = false,
@@ -26,6 +48,10 @@ export async function migrate(
       await client.query(
         await readFile(join(migrationsDir, "001_roles.sql"), "utf8"),
       );
+    if (includeClusterMigration) {
+      for (const [role, password] of rolePasswordsFromEnvironment())
+        await client.query(`ALTER ROLE ${role} PASSWORD $1`, [password]);
+    }
     if (includeClusterMigration)
       await client.query(
         "GRANT CONNECT ON DATABASE event_store TO event_store_owner",
