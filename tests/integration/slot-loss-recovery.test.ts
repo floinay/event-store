@@ -101,7 +101,14 @@ suite("logical slot-loss recovery", () => {
 
     expect(deliveries.get(beforeRequestId)).toBeGreaterThanOrEqual(2);
     expect(deliveries.get(afterRequestId)).toBeGreaterThanOrEqual(1);
-    await stack.deleteConnector(recoveryConnector);
+    await expect(
+      pool.query(
+        "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
+      ),
+    ).resolves.toMatchObject({ rows: [{ cdc_slot_name: recoverySlot }] });
+    await expect(
+      fetch(`${stack.connectUrl}/connectors/${recoveryConnector}/status`),
+    ).resolves.toMatchObject({ status: 200 });
   }, 180_000);
 });
 
