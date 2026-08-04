@@ -301,6 +301,29 @@ export interface ServiceTestHooks {
   hit(point: ServiceCrashPoint): Promise<void> | void;
 }
 
+export interface AppendFailureMetrics {
+  appendFailureCount: number;
+  appendConflictCount: number;
+  appendUnknownOutcomeCount: number;
+}
+
+export function recordAppendFailure(
+  metrics: AppendFailureMetrics,
+  error: unknown,
+): void {
+  const source = error as { code?: unknown; appendDispatched?: unknown };
+  // Expected-revision conflicts are a normal concurrency outcome. They have a
+  // dedicated metric and are deliberately excluded from availability errors.
+  if (source.code === "40001") metrics.appendConflictCount += 1;
+  else metrics.appendFailureCount += 1;
+  if (
+    source.appendDispatched === true &&
+    (source.code === undefined ||
+      /^(08|ECONNRESET|ETIMEDOUT|EPIPE)/.test(String(source.code)))
+  )
+    metrics.appendUnknownOutcomeCount += 1;
+}
+
 export function errorFrom(
   error: unknown,
   requestId?: string,
@@ -739,18 +762,7 @@ export async function startServer(
         metrics.appendCount += 1;
         metrics.appendDurationSeconds += (performance.now() - started) / 1_000;
       } catch (error) {
-        metrics.appendFailureCount += 1;
-        const source = error as {
-          code?: unknown;
-          appendDispatched?: unknown;
-        };
-        if (source.code === "40001") metrics.appendConflictCount += 1;
-        if (
-          source.appendDispatched === true &&
-          (source.code === undefined ||
-            /^(08|ECONNRESET|ETIMEDOUT|EPIPE)/.test(String(source.code)))
-        )
-          metrics.appendUnknownOutcomeCount += 1;
+        recordAppendFailure(metrics, error);
         callback(
           errorFrom(
             error,
