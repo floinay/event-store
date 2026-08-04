@@ -27,6 +27,21 @@ spec:
       interval: 15s
 ---
 apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: event-store-kafka
+  labels:
+    app: event-store
+spec:
+  selector:
+    matchLabels:
+      strimzi.io/cluster: event-store-kafka
+  endpoints:
+    - port: tcp-prometheus
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: event-store-reliability
@@ -90,6 +105,30 @@ spec:
           labels: { severity: page }
           annotations:
             summary: Debezium queue has less than 20 percent capacity remaining
+        - alert: EventStoreKafkaUnderReplicatedPartitions
+          expr: max(kafka_server_replicamanager_underreplicatedpartitions) > 0
+          for: 1m
+          labels: { severity: page }
+          annotations:
+            summary: Kafka has under-replicated Event Store partitions
+        - alert: EventStoreKafkaUnderMinIsr
+          expr: max(kafka_server_replicamanager_underminisrpartitioncount) > 0
+          for: 1m
+          labels: { severity: page }
+          annotations:
+            summary: Kafka has partitions below min.insync.replicas
+        - alert: EventStoreProjectionPoisonEvent
+          expr: increase(event_store_projection_poison_events_total[5m]) > 0
+          for: 1m
+          labels: { severity: page }
+          annotations:
+            summary: A projection partition is paused on a poison event
+        - alert: EventStoreProjectionCheckpointStale
+          expr: max(event_store_projection_checkpoint_age_seconds) > 300
+          for: 2m
+          labels: { severity: warning }
+          annotations:
+            summary: A projection checkpoint is over five minutes old
         - alert: EventStoreLogicalSlotWalWarning
           expr: max(cnpg_event_store_logical_slot_retained_wal_bytes) > 4294967296
           for: 2m

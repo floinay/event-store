@@ -29,6 +29,12 @@ metadata:
 spec:
   kafka:
     version: 4.3.1
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef:
+          name: event-store-kafka-metrics
+          key: kafka-metrics-config.yml
     config:
       num.partitions: 24
       default.replication.factor: 3
@@ -46,3 +52,14 @@ spec:
   entityOperator:
     topicOperator: {}
     userOperator: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: event-store-kafka-metrics
+data:
+  # Empty JMX-exporter rules intentionally expose all Kafka broker metrics;
+  # PrometheusRule below pins the reliability-critical names.
+  kafka-metrics-config.yml: |
+    lowercaseOutputName: true
+    rules: []

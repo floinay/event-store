@@ -48,6 +48,8 @@ describe("production HA topology", () => {
     expect(kafka).toContain("min.insync.replicas: 2");
     expect(kafka).toContain("size: 2Ti");
     expect(kafka).toContain('requests: { cpu: "8", memory: 32Gi }');
+    expect(kafka).toContain("metricsConfig:");
+    expect(kafka).toContain("event-store-kafka-metrics");
     expect(runtime.match(/replicas: 3/g)).toHaveLength(2);
     expect(runtime).toContain("EXACTLY_ONCE_SOURCE_SUPPORT");
     expect(runtime).toContain("CONNECT_EXACTLY_ONCE_SOURCE_SUPPORT");
@@ -91,6 +93,9 @@ describe("production HA topology", () => {
     expect(monitoring).toContain("EventStoreConnectSourceLagP99High");
     expect(monitoring).toContain("EventStoreCommitToConsumerP95High");
     expect(monitoring).toContain("EventStoreCommitToConsumerProbeUnavailable");
+    expect(monitoring).toContain("EventStoreKafkaUnderReplicatedPartitions");
+    expect(monitoring).toContain("EventStoreKafkaUnderMinIsr");
+    expect(monitoring).toContain("EventStoreProjectionPoisonEvent");
     for (const alert of [
       "EventStoreLogicalSlotWalWarning",
       "EventStoreLogicalSlotWalHigh",
