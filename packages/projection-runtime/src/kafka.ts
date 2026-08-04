@@ -245,14 +245,19 @@ export class KafkaProjectionRunner {
             try {
               if (missingKeyOrValue)
                 throw new Error("Kafka event record requires a key and value");
+              const assignmentAbort = new AbortController();
+              const assignmentWatcher = setInterval(() => {
+                if (!isRunning() || isStale()) assignmentAbort.abort();
+              }, 50);
               await withHeartbeats(
                 () =>
                   this.transactionRunner.process(record, this.apply, {
                     allowReadCommittedOffsetGap: record.offset > expected,
                     transactionTimeoutMs: 10_000,
+                    abortSignal: assignmentAbort.signal,
                   }),
                 heartbeat,
-              );
+              ).finally(() => clearInterval(assignmentWatcher));
             } catch (error) {
               if (error instanceof ProjectionCrashError) throw error;
               failure = error;

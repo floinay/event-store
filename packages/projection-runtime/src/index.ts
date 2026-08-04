@@ -133,6 +133,9 @@ export class ProjectionRetentionError extends Error {
 export class ProjectionHandlerTimeoutError extends Error {
   readonly code = "projection_handler_timeout";
 }
+export class ProjectionRebalanceError extends Error {
+  readonly code = "projection_rebalanced";
+}
 /** A test-only process termination marker that must never be retried in-process. */
 export class ProjectionCrashError extends Error {}
 
@@ -297,6 +300,7 @@ export class ProjectionTransactionRunner {
     options: {
       allowReadCommittedOffsetGap?: boolean;
       transactionTimeoutMs?: number;
+      abortSignal?: AbortSignal;
     } = {},
   ): Promise<"processed" | "duplicate"> {
     if (
@@ -349,6 +353,21 @@ export class ProjectionTransactionRunner {
     let discardClient = false;
     const abort = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let rejectExternalAbort!: (error: ProjectionRebalanceError) => void;
+    const externalAbort = new Promise<never>((_, reject) => {
+      rejectExternalAbort = reject;
+    });
+    const onExternalAbort = (): void => {
+      abort.abort();
+      rejectExternalAbort(
+        new ProjectionRebalanceError("projection assignment was revoked"),
+      );
+    };
+    if (options.abortSignal?.aborted) onExternalAbort();
+    else
+      options.abortSignal?.addEventListener("abort", onExternalAbort, {
+        once: true,
+      });
     try {
       await client.query("BEGIN");
       if (options.transactionTimeoutMs !== undefined)
@@ -402,10 +421,9 @@ export class ProjectionTransactionRunner {
       } else {
         await this.crashBarrier?.hit("after_inbox_insert");
         const applied = apply(client, event, abort.signal);
-        if (options.transactionTimeoutMs === undefined) await applied;
-        else
-          await Promise.race([
-            applied,
+        const races: Promise<void>[] = [applied, externalAbort];
+        if (options.transactionTimeoutMs !== undefined)
+          races.push(
             new Promise<never>((_, reject) => {
               timeout = setTimeout(() => {
                 abort.abort();
@@ -416,7 +434,8 @@ export class ProjectionTransactionRunner {
                 );
               }, options.transactionTimeoutMs);
             }),
-          ]);
+          );
+        await Promise.race(races);
         await this.crashBarrier?.hit("after_read_model_mutation");
       }
       await client.query(
@@ -442,11 +461,13 @@ export class ProjectionTransactionRunner {
       // that connection back in the pool after PostgreSQL reports 25P04.
       discardClient =
         (error as { code?: unknown }).code === "25P04" ||
-        error instanceof ProjectionHandlerTimeoutError;
+        error instanceof ProjectionHandlerTimeoutError ||
+        error instanceof ProjectionRebalanceError;
       await client.query("ROLLBACK").catch(() => undefined);
       throw error;
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
+      options.abortSignal?.removeEventListener("abort", onExternalAbort);
       if (discardClient) {
         // A handler can ignore AbortSignal and resume after this method has
         // returned. Destroy and await the physical connection so it cannot
