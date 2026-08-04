@@ -9,7 +9,6 @@ import type {
 } from "./index.js";
 import {
   ProjectionCrashError,
-  ProjectionHandlerTimeoutError,
   ProjectionRebalanceError,
   projectionRetryDelaysMs,
 } from "./index.js";
@@ -357,12 +356,12 @@ export class KafkaProjectionRunner {
                 heartbeat,
               ).finally(() => clearInterval(assignmentWatcher));
             } catch (error) {
-              // A revoked assignment or a transaction timeout must return to
-              // Kafka immediately. Retrying inside the current eachBatch
-              // would retain a stale assignment and postpone rebalance.
+              // A revoked assignment must return to Kafka immediately.
+              // TransactionRunner has already aborted and discarded its
+              // PostgreSQL session for a handler timeout, so it is safe to
+              // route that timeout through the normal bounded poison path.
               if (
                 error instanceof ProjectionCrashError ||
-                error instanceof ProjectionHandlerTimeoutError ||
                 error instanceof ProjectionRebalanceError
               )
                 throw error;

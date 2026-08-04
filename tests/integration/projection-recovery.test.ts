@@ -8,6 +8,7 @@ import {
   KafkaProjectionRunner,
   ProjectionCheckpointStore,
   ProjectionFailureReporter,
+  ProjectionHandlerTimeoutError,
   ProjectionPayloadSchemas,
   ProjectionTransactionRunner,
 } from "@event-store/projection-runtime";
@@ -227,7 +228,7 @@ suite("projection recovery", () => {
         createProjectionEventTransformer(upcasters, schemas),
       ),
       async () => {
-        throw new Error("poison handler");
+        throw new ProjectionHandlerTimeoutError("poison handler timeout");
       },
       new ProjectionCheckpointStore(pool, identity),
       new ProjectionFailureReporter(pool, identity),
@@ -249,7 +250,7 @@ suite("projection recovery", () => {
           [projectionName, generationId, eventId],
         ),
       ).resolves.toMatchObject({
-        rows: [{ attempt_count: 8, dlq_published_at: expect.any(String) }],
+        rows: [{ attempt_count: 8, dlq_published_at: expect.any(Date) }],
       });
       const checkpointBeforeResume = await new ProjectionCheckpointStore(
         pool,
