@@ -131,6 +131,15 @@ suite("gRPC to CDC", () => {
       },
     );
     expect(response).toBeDefined();
+    expect(response).toMatchObject({
+      request_id: requestId,
+      previous_revision: "0",
+      current_revision: "1",
+    });
+    expect(typeof response.recorded_at).toBe("string");
+    expect(response.events).toMatchObject([
+      { stream_revision: "1", event_number: expect.any(String) },
+    ]);
     await stack.setPostgresConnectEnabled(true);
     await expect(received).resolves.toMatchObject({
       aggregateId,
