@@ -17,6 +17,7 @@ describe("production Kafka topology", () => {
     for (const name of [
       "event-store.events.v1",
       "event-store.projection-dlq.v1",
+      "__debezium-heartbeat.event-store-live",
       "_connect-event-store-configs",
       "_connect-event-store-offsets",
       "_connect-event-store-status",

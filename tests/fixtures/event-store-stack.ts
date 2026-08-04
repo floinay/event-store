@@ -313,6 +313,15 @@ EOF
           ],
         },
         {
+          topic: "__debezium-heartbeat.event-store-live",
+          numPartitions: 1,
+          replicationFactor: 1,
+          configEntries: [
+            { name: "cleanup.policy", value: "delete" },
+            { name: "retention.ms", value: String(24 * 60 * 60 * 1_000) },
+          ],
+        },
+        {
           topic: "_connect-event-store-configs",
           numPartitions: 1,
           replicationFactor: 1,
