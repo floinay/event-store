@@ -298,6 +298,11 @@ suite("Debezium CDC", () => {
       const client = await pool.connect();
       const requestId = uuidv7();
       try {
+        // PostgresEventStore configures pooled sessions with a 2s idle
+        // transaction timeout. This test intentionally holds T1 while its
+        // later committed barrier passes CDC, so override it on this raw
+        // session rather than letting pool reuse terminate the transaction.
+        await client.query("SET idle_in_transaction_session_timeout = '30s'");
         await client.query("BEGIN");
         const result = await client.query<{
           append_v1: { events: { eventId: string }[] };
@@ -477,4 +482,74 @@ suite("Debezium CDC", () => {
       await consumer.disconnect();
     }
   }, 90_000);
+
+  it("hides an aborted transactional producer record from a read_committed consumer", async () => {
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [stack.kafkaBroker()] },
+    });
+    const consumer = kafka.consumer({
+      kafkaJS: {
+        groupId: `cdc-aborted-transaction-${uuidv7()}`,
+        autoCommit: false,
+        fromBeginning: true,
+        readUncommitted: false,
+      },
+    });
+    const producer = kafka.producer({
+      kafkaJS: { idempotent: true, transactionalId: `cdc-test-${uuidv7()}` },
+    });
+    const abortedId = uuidv7();
+    const barrierId = uuidv7();
+    const seen = new Set<string>();
+    await consumer.connect();
+    await producer.connect();
+    await consumer.subscribe({
+      topics: ["event-store.events.v1"],
+      replace: true,
+    });
+    const barrierSeen = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () =>
+          reject(new Error("read_committed consumer did not receive barrier")),
+        30_000,
+      );
+      void consumer.run({
+        eachMessage: async ({ message }) => {
+          const id = message.headers?.id;
+          const eventId = Array.isArray(id)
+            ? id[0]?.toString()
+            : id?.toString();
+          if (eventId === undefined) return;
+          seen.add(eventId);
+          if (eventId === barrierId) {
+            clearTimeout(timeout);
+            resolve();
+          }
+        },
+      });
+    });
+    try {
+      await producer.transaction();
+      await producer.send({
+        topic: "event-store.events.v1",
+        messages: [
+          { key: "aborted", value: "aborted", headers: { id: abortedId } },
+        ],
+      });
+      await producer.abort();
+      await producer.transaction();
+      await producer.send({
+        topic: "event-store.events.v1",
+        messages: [
+          { key: "barrier", value: "barrier", headers: { id: barrierId } },
+        ],
+      });
+      await producer.commit();
+      await barrierSeen;
+      expect(seen.has(abortedId)).toBe(false);
+    } finally {
+      await producer.disconnect();
+      await consumer.disconnect();
+    }
+  }, 60_000);
 });
