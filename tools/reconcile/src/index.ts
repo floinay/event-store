@@ -7,10 +7,18 @@ export interface ReconciliationReport {
   maxEventNumber: string | null;
   revisionGaps: string;
   envelopeHashMismatches: string;
+  missingProjectionEvents?: string;
+  unknownProjectionEvents?: string;
+}
+
+export interface ProjectionReconciliationTarget {
+  projectionName: string;
+  generationId: string;
 }
 
 export async function reconcile(
   databaseUrl: string,
+  projection?: ProjectionReconciliationTarget,
 ): Promise<ReconciliationReport> {
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
@@ -30,13 +38,34 @@ export async function reconcile(
        FROM event_store.events
        WHERE envelope_sha256 <> encode(event_store.digest(event_store.canonical_jsonb(event_envelope), 'sha256'), 'hex')`,
     );
-    return {
+    const report: ReconciliationReport = {
       count: events.rows[0]?.count ?? "0",
       minEventNumber: events.rows[0]?.min ?? null,
       maxEventNumber: events.rows[0]?.max ?? null,
       revisionGaps: gaps.rows[0]?.count ?? "0",
       envelopeHashMismatches: hashes.rows[0]?.count ?? "0",
     };
+    if (projection !== undefined) {
+      const [missing, unknown] = await Promise.all([
+        client.query<{ count: string }>(
+          `SELECT count(*)::text FROM event_store.events e
+           WHERE NOT EXISTS (
+             SELECT 1 FROM projection_runtime.inbox i
+             WHERE i.projection_name=$1 AND i.generation_id=$2 AND i.event_id=e.event_id
+           )`,
+          [projection.projectionName, projection.generationId],
+        ),
+        client.query<{ count: string }>(
+          `SELECT count(*)::text FROM projection_runtime.inbox i
+           WHERE i.projection_name=$1 AND i.generation_id=$2
+             AND NOT EXISTS (SELECT 1 FROM event_store.events e WHERE e.event_id=i.event_id)`,
+          [projection.projectionName, projection.generationId],
+        ),
+      ]);
+      report.missingProjectionEvents = missing.rows[0]?.count ?? "0";
+      report.unknownProjectionEvents = unknown.rows[0]?.count ?? "0";
+    }
+    return report;
   } finally {
     await client.end();
   }
@@ -45,8 +74,26 @@ export async function reconcile(
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const url = process.env.DATABASE_URL;
   if (url === undefined) throw new Error("DATABASE_URL is required");
-  const report = await reconcile(url);
+  const projectionName = process.env.PROJECTION_NAME;
+  const generationId = process.env.PROJECTION_GENERATION_ID;
+  if ((projectionName === undefined) !== (generationId === undefined))
+    throw new Error(
+      "PROJECTION_NAME and PROJECTION_GENERATION_ID must be set together",
+    );
+  const report = await reconcile(
+    url,
+    projectionName === undefined || generationId === undefined
+      ? undefined
+      : { projectionName, generationId },
+  );
   console.log(JSON.stringify(report));
-  if (report.revisionGaps !== "0" || report.envelopeHashMismatches !== "0")
+  if (
+    report.revisionGaps !== "0" ||
+    report.envelopeHashMismatches !== "0" ||
+    (report.missingProjectionEvents !== undefined &&
+      report.missingProjectionEvents !== "0") ||
+    (report.unknownProjectionEvents !== undefined &&
+      report.unknownProjectionEvents !== "0")
+  )
     process.exitCode = 2;
 }

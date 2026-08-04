@@ -44,10 +44,36 @@ suite("reconciliation", () => {
         },
       ],
     });
-    await expect(reconcile(stack.databaseUrl)).resolves.toMatchObject({
+    const event = await pool.query<{
+      event_id: string;
+      envelope_sha256: string;
+    }>(
+      "SELECT event_id::text,envelope_sha256 FROM event_store.events WHERE request_id=$1",
+      [requestId],
+    );
+    const projectionName = "reconcile";
+    const generationId = uuidv7();
+    await pool.query(
+      "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ($1,$2,'building',clock_timestamp())",
+      [projectionName, generationId],
+    );
+    await pool.query(
+      "INSERT INTO projection_runtime.inbox(projection_name,generation_id,event_id,envelope_sha256,topic_name,partition_no,kafka_offset,processed_at) VALUES ($1,$2,$3,$4,'event-store.events.v1',0,0,clock_timestamp())",
+      [
+        projectionName,
+        generationId,
+        event.rows[0]!.event_id,
+        event.rows[0]!.envelope_sha256,
+      ],
+    );
+    await expect(
+      reconcile(stack.databaseUrl, { projectionName, generationId }),
+    ).resolves.toMatchObject({
       count: "1",
       revisionGaps: "0",
       envelopeHashMismatches: "0",
+      missingProjectionEvents: "0",
+      unknownProjectionEvents: "0",
     });
   });
 });
