@@ -1,7 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { uuidv7 } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
+import {
+  createProjectionEventTransformer,
+  KafkaProjectionRunner,
+  ProjectionCheckpointStore,
+  ProjectionFailureReporter,
+  ProjectionPayloadSchemas,
+  ProjectionTransactionRunner,
+} from "@event-store/projection-runtime";
+import { appendReplayBarriers } from "@event-store/replay";
+import { UpcasterRegistry } from "@event-store/upcasting";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
 import type { Pool } from "pg";
 
@@ -11,6 +22,7 @@ suite("logical slot-loss recovery", () => {
   const stack = new EventStoreStack();
   let pool: Pool;
   let store: PostgresEventStore;
+  let projectionConsumer: KafkaJS.Consumer;
 
   beforeAll(async () => {
     await stack.start({ cdc: true });
@@ -18,51 +30,36 @@ suite("logical slot-loss recovery", () => {
     store = new PostgresEventStore(pool, 8n * 1024n ** 3n);
   }, 180_000);
   afterAll(async () => {
+    await projectionConsumer?.disconnect().catch(() => undefined);
     await pool?.end();
     await stack.stop();
   }, 60_000);
 
-  it("fails closed, snapshots the lost slot history, and resumes on a new live slot", async () => {
-    const kafka = new KafkaJS.Kafka({
-      kafkaJS: { brokers: [stack.kafkaBroker()] },
-    });
-    const consumer = kafka.consumer({
-      kafkaJS: {
-        groupId: `slot-loss-${uuidv7()}`,
-        autoCommit: false,
-        fromBeginning: true,
-      },
-    });
+  it("keeps writes closed until a real projection deduplicates, catches up, and reconciles recovery", async () => {
+    const projectionName = "slot-loss-recovery";
+    const generationId = uuidv7();
+    const consumerGroupId = `slot-loss-projection-${uuidv7()}`;
+    await pool.query(
+      "CREATE SCHEMA recovery_model; CREATE TABLE recovery_model.events(event_id uuid PRIMARY KEY)",
+    );
+    await pool.query(
+      `INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at)
+       VALUES ($1,$2,'building',clock_timestamp())`,
+      [projectionName, generationId],
+    );
+    const upcasters = new UpcasterRegistry();
+    upcasters.setCurrentVersion("recovery.appended", 1);
+    upcasters.setCurrentVersion("system.replaybarrier", 1);
+    const schemas = new ProjectionPayloadSchemas();
+    schemas.register("recovery.appended", 1, z.object({ marker: z.string() }));
+    schemas.register(
+      "system.replaybarrier",
+      1,
+      z.object({ replayId: z.string(), partition: z.string() }),
+    );
+    const identity = { name: projectionName, generationId };
     const beforeRequestId = uuidv7();
-    const afterRequestId = uuidv7();
-    const deliveries = new Map<string, number>();
-    let notify!: () => void;
-    const observed = new Promise<void>((resolve) => {
-      notify = resolve;
-    });
-    await consumer.connect();
-    await consumer.subscribe({
-      topics: ["event-store.events.v1"],
-      replace: true,
-    });
-    await consumer.run({
-      eachMessage: async ({ message }) => {
-        const event = JSON.parse(message.value?.toString() ?? "{}") as {
-          context?: { requestId?: string };
-        };
-        const requestId = event.context?.requestId;
-        if (requestId === undefined) return;
-        deliveries.set(requestId, (deliveries.get(requestId) ?? 0) + 1);
-        if (
-          (deliveries.get(beforeRequestId) ?? 0) >= 2 &&
-          (deliveries.get(afterRequestId) ?? 0) >= 1
-        )
-          notify();
-      },
-    });
-
     await append(store, beforeRequestId, "before-slot-loss");
-    await eventually(() => (deliveries.get(beforeRequestId) ?? 0) === 1);
 
     await stack.deleteConnector("event-store-live");
     await eventually(async () => {
@@ -74,21 +71,18 @@ suite("logical slot-loss recovery", () => {
     await pool.query("SELECT pg_drop_replication_slot('event_store_live')");
     await expect(
       append(store, uuidv7(), "rejected-while-slot-missing"),
-    ).rejects.toMatchObject({
-      code: "P0001",
-    });
+    ).rejects.toMatchObject({ code: "P0001" });
 
     const recoverySlot = `event_store_recovery_${uuidv7().replaceAll("-", "_")}`;
     await pool.query(
       "SELECT pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
       [recoverySlot],
     );
-    const recoveryId = `loss-${uuidv7().slice(0, 8)}`;
+    const recoveryId = `loss-${uuidv7().replaceAll("-", "").slice(-12)}`;
     const recoveryConnector = await stack.createSnapshotRecoveryConnector(
       recoveryId,
       recoverySlot,
     );
-    await eventually(() => (deliveries.get(beforeRequestId) ?? 0) >= 2);
     await eventually(async () => {
       const slot = await pool.query<{ active: boolean }>(
         "SELECT active FROM pg_replication_slots WHERE slot_name=$1",
@@ -96,42 +90,214 @@ suite("logical slot-loss recovery", () => {
       );
       return slot.rows[0]?.active === true;
     });
-    await pool.query(
-      "SELECT event_store.activate_recovery_cdc_slot($1,$2,$3)",
-      [recoverySlot, recoveryConnector, (8n * 1024n ** 3n).toString()],
-    );
-    await append(store, afterRequestId, "after-slot-recovery");
-    await observed;
-    await consumer.disconnect();
+    await expect(
+      pool.query("SELECT event_store.activate_recovery_cdc_slot($1,$2,$3)", [
+        recoverySlot,
+        recoveryConnector,
+        (8n * 1024n ** 3n).toString(),
+      ]),
+    ).rejects.toMatchObject({ code: "P0001" });
 
-    expect(deliveries.get(beforeRequestId)).toBeGreaterThanOrEqual(2);
-    expect(deliveries.get(afterRequestId)).toBeGreaterThanOrEqual(1);
+    // Start from the recovery connector's snapshot, then crash at the durable
+    // checkpoint boundary before barriers are written.
+    projectionConsumer = await startRecoveryProjection(
+      stack,
+      pool,
+      identity,
+      consumerGroupId,
+      upcasters,
+      schemas,
+    );
+    await eventually(async () => {
+      const result = await pool.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM recovery_model.events",
+      );
+      return result.rows[0]?.count === 1;
+    });
+    await projectionConsumer.disconnect();
+    projectionConsumer = await startRecoveryProjection(
+      stack,
+      pool,
+      identity,
+      consumerGroupId,
+      upcasters,
+      schemas,
+    );
+    const barriers = await appendReplayBarriers(store, recoveryId);
     await expect(
       pool.query(
-        "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
+        "SELECT count(*)::int AS count FROM event_store.events WHERE event_name='system.replaybarrier' AND event_envelope->'payload'->>'replayId'=$1",
+        [recoveryId],
       ),
-    ).resolves.toMatchObject({
-      rows: [
-        { cdc_slot_name: recoverySlot, cdc_connector_name: recoveryConnector },
+    ).resolves.toMatchObject({ rows: [{ count: barriers.length }] });
+    await observeBarrierTransport(stack, barriers.map((barrier) => barrier.eventId));
+    await eventually(async () => {
+      const failures = await pool.query<{ error_detail: { message: string } }>(
+        `SELECT error_detail FROM projection_runtime.failures
+         WHERE projection_name=$1 AND generation_id=$2`,
+        [projectionName, generationId],
+      );
+      if (failures.rows.length > 0)
+        throw new Error(
+          `recovery projection failed: ${failures.rows
+            .map((row) => row.error_detail.message)
+            .join(", ")}`,
+        );
+      const result = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM projection_runtime.inbox i
+         JOIN event_store.events e ON e.event_id=i.event_id
+         WHERE i.projection_name=$1 AND i.generation_id=$2
+           AND e.event_name='system.replaybarrier'
+           AND e.event_envelope->'payload'->>'replayId'=$3`,
+        [projectionName, generationId, recoveryId],
+      );
+      return result.rows[0]?.count === barriers.length;
+    }, 90_000);
+    await eventually(async () =>
+      recoveryBarriersHaveNoLogicalLag(
+        pool,
+        projectionName,
+        generationId,
+        recoveryId,
+      ),
+    );
+    await pool.query(
+      "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4,$5,$6,$7)",
+      [
+        recoverySlot,
+        recoveryConnector,
+        projectionName,
+        generationId,
+        recoveryId,
+        consumerGroupId,
+        "0",
       ],
-    });
-    await pool.query("SELECT event_store.enable_append_admission($1)", [
+    );
+    await pool.query("SELECT event_store.activate_recovery_cdc_slot($1,$2,$3)", [
+      recoverySlot,
+      recoveryConnector,
       (8n * 1024n ** 3n).toString(),
     ]);
-    await expect(
-      pool.query(
-        "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
-      ),
-    ).resolves.toMatchObject({
-      rows: [
-        { cdc_slot_name: recoverySlot, cdc_connector_name: recoveryConnector },
-      ],
+    await append(store, uuidv7(), "after-slot-recovery");
+    await eventually(async () => {
+      const missing = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM event_store.events e
+         WHERE NOT EXISTS (
+           SELECT 1 FROM projection_runtime.inbox i
+            WHERE i.projection_name=$1 AND i.generation_id=$2 AND i.event_id=e.event_id
+         )`,
+        [projectionName, generationId],
+      );
+      return missing.rows[0]?.count === 0;
     });
-    await expect(
-      fetch(`${stack.connectUrl}/connectors/${recoveryConnector}/status`),
-    ).resolves.toMatchObject({ status: 200 });
+    expect(
+      (
+        await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM recovery_model.events",
+        )
+      ).rows[0]?.count,
+    ).toBe(26);
   }, 180_000);
 });
+
+async function recoveryBarriersHaveNoLogicalLag(
+  pool: Pool,
+  projectionName: string,
+  generationId: string,
+  recoveryId: string,
+): Promise<boolean> {
+  // Kafka high watermarks include transaction-control batches hidden from
+  // read_committed consumers. A barrier in every partition is a logical tail:
+  // inbox plus a later durable checkpoint proves zero readable-record lag.
+  const result = await pool.query<{ count: number }>(
+    `SELECT count(*)::int AS count
+       FROM event_store.events e
+       JOIN projection_runtime.inbox i ON i.event_id=e.event_id
+       JOIN projection_runtime.checkpoints c
+         ON c.projection_name=i.projection_name
+        AND c.generation_id=i.generation_id
+        AND c.topic_name=i.topic_name
+        AND c.partition_no=i.partition_no
+      WHERE i.projection_name=$1 AND i.generation_id=$2
+        AND e.event_name='system.replaybarrier'
+        AND e.event_envelope->'payload'->>'replayId'=$3
+        AND c.next_offset > i.kafka_offset`,
+    [projectionName, generationId, recoveryId],
+  );
+  return result.rows[0]?.count === 24;
+}
+
+async function startRecoveryProjection(
+  stack: EventStoreStack,
+  pool: Pool,
+  identity: { name: string; generationId: string },
+  groupId: string,
+  upcasters: UpcasterRegistry,
+  schemas: ProjectionPayloadSchemas,
+): Promise<KafkaJS.Consumer> {
+  return new KafkaProjectionRunner(
+    {
+      brokers: [stack.kafkaBroker()],
+      groupId,
+      topic: "event-store.events.v1",
+    },
+    new ProjectionTransactionRunner(
+      pool,
+      identity,
+      createProjectionEventTransformer(upcasters, schemas),
+    ),
+    async (client, event) => {
+      await client.query(
+        "INSERT INTO recovery_model.events(event_id) VALUES ($1) ON CONFLICT DO NOTHING",
+        [event.eventId],
+      );
+    },
+    new ProjectionCheckpointStore(pool, identity),
+    new ProjectionFailureReporter(pool, identity),
+  ).start();
+}
+
+async function observeBarrierTransport(
+  stack: EventStoreStack,
+  eventIds: readonly string[],
+): Promise<void> {
+  const kafka = new KafkaJS.Kafka({ kafkaJS: { brokers: [stack.kafkaBroker()] } });
+  const consumer = kafka.consumer({
+    kafkaJS: {
+      groupId: `slot-loss-transport-${uuidv7()}`,
+      autoCommit: false,
+      fromBeginning: true,
+      readUncommitted: false,
+    },
+  });
+  const expected = new Set(eventIds);
+  const observed = new Set<string>();
+  await consumer.connect();
+  await consumer.subscribe({ topics: ["event-store.events.v1"], replace: true });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("recovery connector did not deliver all barriers")),
+        60_000,
+      );
+      void consumer.run({
+        eachMessage: async ({ message }) => {
+          const event = JSON.parse(message.value?.toString() ?? "{}") as {
+            eventId?: string;
+          };
+          if (event.eventId !== undefined && expected.has(event.eventId))
+            observed.add(event.eventId);
+          if (observed.size === expected.size) {
+            clearTimeout(timeout);
+            resolve();
+          }
+        },
+      });
+    });
+  } finally {
+    await consumer.disconnect();
+  }
+}
 
 async function append(
   store: PostgresEventStore,

@@ -125,6 +125,29 @@ export class PostgresEventStore {
     }
   }
 
+  /**
+   * Appends the fixed recovery barrier event through the narrowly-scoped
+   * database function. It intentionally bypasses general append admission so
+   * a fail-closed recovery can prove catch-up before normal writes resume.
+   */
+  async appendRecoveryBarrier(
+    replayId: string,
+    partition: number,
+    aggregateId: string,
+    requestId: string,
+  ): Promise<AppendResult> {
+    return this.withSession(async (client) => {
+      const result = await client.query<{ append_recovery_barrier: AppendResult }>(
+        "SELECT event_store.append_recovery_barrier($1,$2,$3,$4) AS append_recovery_barrier",
+        [replayId, partition, aggregateId, requestId],
+      );
+      const value = result.rows[0]?.append_recovery_barrier;
+      if (value === undefined)
+        throw new Error("recovery barrier append returned no result");
+      return value;
+    });
+  }
+
   async getStreamHead(
     namespace: string,
     aggregateType: string,

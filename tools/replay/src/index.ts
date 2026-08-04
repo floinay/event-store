@@ -156,28 +156,12 @@ export async function appendReplayBarriers(
   for (let partition = 0; partition < kafkaPartitionCount; partition += 1) {
     const aggregateId = barrierAggregateId(partition);
     const requestId = uuidv7();
-    const result = await store.append({
-      producerService: "replay-coordinator",
-      namespace: "system",
-      aggregateType: "Barrier",
+    const result = await store.appendRecoveryBarrier(
+      replayId,
+      partition,
       aggregateId,
       requestId,
-      expectedRevision: { kind: "no_stream" },
-      context: {
-        requestId,
-        correlationId: uuidv7(),
-        causationId: null,
-        actor: { kind: "system", subjectRef: "replay-coordinator" },
-      },
-      events: [
-        {
-          eventName: "system.replaybarrier",
-          schemaVersion: 1,
-          occurredAt: new Date().toISOString(),
-          payload: { replayId, partition: String(partition) },
-        },
-      ],
-    });
+    );
     const eventId = result.events[0]?.eventId;
     if (eventId === undefined)
       throw new Error("replay barrier append returned no event");

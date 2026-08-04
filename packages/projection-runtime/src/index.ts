@@ -229,6 +229,7 @@ export class ProjectionTransactionRunner {
   async process(
     record: ConsumedRecord,
     apply: ProjectionHandler,
+    options: { allowReadCommittedOffsetGap?: boolean } = {},
   ): Promise<"processed" | "duplicate"> {
     const wireValue = record.value.toString();
     const envelope = JSON.parse(wireValue);
@@ -269,7 +270,7 @@ export class ProjectionTransactionRunner {
         checkpoint.rows[0] === undefined
           ? record.offset
           : BigInt(checkpoint.rows[0].next_offset);
-      if (record.offset > nextOffset)
+      if (record.offset > nextOffset && !options.allowReadCommittedOffsetGap)
         throw new ProjectionGapError(
           `expected ${nextOffset}, got ${record.offset}`,
         );

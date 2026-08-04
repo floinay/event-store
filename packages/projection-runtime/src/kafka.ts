@@ -95,6 +95,17 @@ export class KafkaProjectionRunner {
           `${assignment.topic}/${assignment.partition}`,
           expected,
         );
+        // A previous process can have committed Kafka farther than its durable
+        // PostgreSQL checkpoint (for example, across a crash between the two
+        // acknowledgements). Reset the group to the database source of truth
+        // before seeking; otherwise the broker assignment may skip a record.
+        await consumer.commitOffsets([
+          {
+            topic: assignment.topic,
+            partition: assignment.partition,
+            offset: expected.toString(),
+          },
+        ]);
         consumer.seek({
           topic: assignment.topic,
           partition: assignment.partition,
@@ -140,14 +151,17 @@ export class KafkaProjectionRunner {
           ]);
           return;
         }
-        if (record.offset > expected) {
-          consumer.seek({ topic, partition, offset: expected.toString() });
-          return;
-        }
+        // With read_committed, a seek to `expected` can legitimately yield a
+        // later offset because Kafka hides transaction-control batches. The
+        // transaction runner records the delivered offset atomically.
         let failure: unknown;
         for (const delay of projectionRetryDelaysMs) {
           try {
-            await this.transactionRunner.process(record, this.apply);
+            // read_committed consumers do not receive Kafka transaction-control
+            // batches, so readable record offsets are not necessarily adjacent.
+            await this.transactionRunner.process(record, this.apply, {
+              allowReadCommittedOffsetGap: true,
+            });
           } catch (error) {
             failure = error;
             await new Promise((resolve) => setTimeout(resolve, delay));
