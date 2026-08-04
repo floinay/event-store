@@ -452,6 +452,25 @@ suite("PostgreSQL HA promotion", () => {
       ).rejects.toMatchObject({ code: "P0001" });
       const promotedAdmission = new Pool({ connectionString: standbyUrl });
       try {
+        const projectionName = "ha-promotion-reconciliation";
+        const generationId = uuidv7();
+        await promotedAdmission.query(
+          `INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at)
+           VALUES ($1,$2,'active',clock_timestamp())`,
+          [projectionName, generationId],
+        );
+        await promotedAdmission.query(
+          `INSERT INTO projection_runtime.inbox(
+             projection_name,generation_id,event_id,envelope_sha256,topic_name,partition_no,kafka_offset,processed_at
+           )
+           SELECT $1,$2,event_id,envelope_sha256,'event-store.events.v1',0,event_number,clock_timestamp()
+             FROM event_store.events`,
+          [projectionName, generationId],
+        );
+        await promotedAdmission.query(
+          "SELECT event_store.record_cdc_timeline_reconciliation($1,$2,event_store.current_timeline_id())",
+          [projectionName, generationId],
+        );
         await promotedAdmission.query(
           "SELECT event_store.set_cdc_delivery_health_on_timeline(event_store.current_timeline_id())",
         );

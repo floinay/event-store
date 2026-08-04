@@ -71,6 +71,28 @@ export async function reconcile(
   }
 }
 
+export async function recordTimelineReconciliation(
+  databaseUrl: string,
+  projection: ProjectionReconciliationTarget,
+): Promise<void> {
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    const timeline = await client.query<{ timeline_id: number }>(
+      "SELECT event_store.current_timeline_id() AS timeline_id",
+    );
+    const timelineId = timeline.rows[0]?.timeline_id;
+    if (timelineId === undefined)
+      throw new Error("PostgreSQL timeline is unavailable");
+    await client.query(
+      "SELECT event_store.record_cdc_timeline_reconciliation($1,$2,$3)",
+      [projection.projectionName, projection.generationId, timelineId],
+    );
+  } finally {
+    await client.end();
+  }
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const url = process.env.DATABASE_URL;
   if (url === undefined) throw new Error("DATABASE_URL is required");
@@ -96,4 +118,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       report.unknownProjectionEvents !== "0")
   )
     process.exitCode = 2;
+  else if (projectionName !== undefined && generationId !== undefined)
+    await recordTimelineReconciliation(url, {
+      projectionName,
+      generationId,
+    });
 }
