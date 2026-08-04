@@ -74,9 +74,7 @@ describe("production HA topology", () => {
     expect(runtime).toContain("CDC_LATENCY_PROBE_INTERVAL_MS");
     expect(runtime).toContain("name: connect");
     expect(runtime).toContain('limits: { cpu: "2", memory: 4Gi }');
-    expect(preflight).toContain(
-      "assert_failover_candidate('event_store_live')",
-    );
+    expect(preflight).toContain("assert_configured_failover_candidate()");
     expect(bootstrap).toContain("event-store-kafka-kafka-bootstrap:9092");
     expect(bootstrap).toContain("http://event-store-connect:8083");
     expect(connector).toContain(

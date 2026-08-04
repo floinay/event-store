@@ -26,7 +26,7 @@ transaction. With `StringConverter` and `expand.json.payload=false`, Debezium
 publishes those canonical JSON bytes without reserializing the JSONB envelope.
 
 Before promoting a PostgreSQL standby, run
-`SELECT event_store.assert_failover_candidate('event_store_live')` on that
+`SELECT event_store.assert_configured_failover_candidate()` on that
 candidate. Promotion is prohibited unless the slot is present, failover-enabled,
 non-temporary, valid, and `synced=true`. After promotion, redirect the primary
 Service and Connect, verify the slot identity/LSN, reconcile event IDs around

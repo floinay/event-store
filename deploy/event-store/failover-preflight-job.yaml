@@ -18,7 +18,7 @@ spec:
             - -ec
             - >-
               psql "$DATABASE_URL" -v ON_ERROR_STOP=1
-              -c "SELECT event_store.assert_failover_candidate('event_store_live')"
+              -c "SELECT event_store.assert_configured_failover_candidate()"
           env:
             - name: DATABASE_URL
               valueFrom:
