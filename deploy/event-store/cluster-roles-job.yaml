@@ -1,0 +1,19 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: event-store-cluster-roles
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: cluster-roles
+          image: event-store-bootstrap:latest
+          command: ["node", "tools/migrate/dist/index.js"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: event-store-cluster-admin, key: database-url }
+            - name: MIGRATE_CLUSTER
+              value: "true"
