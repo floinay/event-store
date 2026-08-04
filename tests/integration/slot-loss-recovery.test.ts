@@ -102,7 +102,11 @@ suite("logical slot-loss recovery", () => {
     const beforeRequestId = uuidv7();
     await append(store, beforeRequestId, "before-slot-loss");
 
-    await stack.deleteConnector("event-store-live");
+    const paused = await fetch(
+      `${stack.connectUrl}/connectors/event-store-live/pause`,
+      { method: "PUT" },
+    );
+    expect(paused.ok).toBe(true);
     await eventually(async () => {
       const slot = await pool.query<{ active: boolean }>(
         "SELECT active FROM pg_replication_slots WHERE slot_name='event_store_live'",
@@ -236,6 +240,9 @@ suite("logical slot-loss recovery", () => {
           ? 0n
           : 1n,
     });
+    await expect(
+      fetch(`${stack.connectUrl}/connectors/event-store-live`),
+    ).resolves.toMatchObject({ status: 404 });
     await append(store, uuidv7(), "after-slot-recovery");
     await eventually(async () => {
       const missing = await pool.query<{ count: number }>(

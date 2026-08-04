@@ -551,10 +551,26 @@ export class RecoveryCutoverCoordinator {
   ): Promise<void> {
     if ((await verification.kafkaLag()) !== 0n)
       throw new Error("recovery projection Kafka lag is not zero");
+    const current = await this.pool.query<{
+      cdc_slot_name: string;
+      cdc_connector_name: string;
+    }>(
+      "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
+    );
+    const oldSlotName = current.rows[0]?.cdc_slot_name;
+    const oldConnectorName = current.rows[0]?.cdc_connector_name;
+    if (oldSlotName === undefined || oldConnectorName === undefined)
+      throw new Error("current CDC ownership is unavailable");
     await Promise.all([
       this.assertConnectorDelivery(slotName, connectorName),
       this.assertConsumerGroup(verification),
     ]);
+    await this.retirePreviousDelivery(
+      oldSlotName,
+      oldConnectorName,
+      slotName,
+      connectorName,
+    );
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -580,6 +596,45 @@ export class RecoveryCutoverCoordinator {
     } finally {
       client.release();
     }
+  }
+
+  private async retirePreviousDelivery(
+    oldSlotName: string,
+    oldConnectorName: string,
+    recoverySlotName: string,
+    recoveryConnectorName: string,
+  ): Promise<void> {
+    if (oldConnectorName !== recoveryConnectorName) {
+      const response = await fetch(
+        `${this.connectorUrl}/connectors/${oldConnectorName}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok && response.status !== 404)
+        throw new Error(
+          `could not remove old CDC connector: ${await response.text()}`,
+        );
+    }
+    if (oldSlotName === recoverySlotName) return;
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const slot = await this.pool.query<{ active: boolean }>(
+        "SELECT active FROM pg_replication_slots WHERE slot_name=$1",
+        [oldSlotName],
+      );
+      if (slot.rows[0] === undefined) return;
+      if (slot.rows[0].active === false) {
+        try {
+          await this.pool.query("SELECT pg_drop_replication_slot($1)", [
+            oldSlotName,
+          ]);
+        } catch (error) {
+          if ((error as { code?: string }).code !== "42704") throw error;
+        }
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error("old CDC slot did not stop after connector removal");
   }
 
   private async assertConnectorDelivery(
