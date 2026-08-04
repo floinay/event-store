@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { uuidv7 } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
+import { reconcile } from "@event-store/reconcile";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { Pool } from "pg";
@@ -41,17 +42,43 @@ suite("PITR recovery", () => {
     ).rows[0]?.target_time;
     if (targetTime === undefined)
       throw new Error("could not read PITR target time");
+    const expectedRestoredEvents = await source.query<{
+      event_number: string;
+      stream_revision: string;
+      envelope_sha256: string;
+    }>(
+      "SELECT event_number::text, stream_revision::text, envelope_sha256 FROM event_store.events ORDER BY event_number",
+    );
     await append(store, aggregateId, uuidv7(), "after-target", "exact");
 
     restored = await stack.restorePitr(backup, targetTime);
     const restoredPool = new Pool({ connectionString: restored.databaseUrl });
     try {
       const events = await restoredPool.query<{
+        event_number: string;
+        stream_revision: string;
+        envelope_sha256: string;
         event_envelope: { payload: { marker: string } };
-      }>("SELECT event_envelope FROM event_store.events ORDER BY event_number");
+      }>(
+        "SELECT event_number::text, stream_revision::text, envelope_sha256, event_envelope FROM event_store.events ORDER BY event_number",
+      );
       expect(
         events.rows.map((row) => row.event_envelope.payload.marker),
       ).toEqual(["before-target"]);
+      expect(
+        events.rows.map(
+          ({ event_number, stream_revision, envelope_sha256 }) => ({
+            event_number,
+            stream_revision,
+            envelope_sha256,
+          }),
+        ),
+      ).toEqual(expectedRestoredEvents.rows);
+      await expect(reconcile(restored.databaseUrl)).resolves.toMatchObject({
+        count: expectedRestoredEvents.rowCount?.toString() ?? "0",
+        revisionGaps: "0",
+        envelopeHashMismatches: "0",
+      });
       const slot = `event_store_pitr_${uuidv7().replaceAll("-", "_")}`;
       await restoredPool.query(
         "SELECT * FROM pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
