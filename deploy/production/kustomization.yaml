@@ -4,6 +4,7 @@ resources:
   - postgres.yaml
   - kafka.yaml
   - runtime.yaml
+  - projection-failure-prune-cronjob.yaml
 configMapGenerator:
   - name: event-store-connect-jmx
     files:

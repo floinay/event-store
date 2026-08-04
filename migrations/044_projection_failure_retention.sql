@@ -17,4 +17,6 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION projection_runtime.prune_failures() TO projection_worker;
+REVOKE ALL ON FUNCTION projection_runtime.prune_failures() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION projection_runtime.prune_failures()
+  TO projection_worker, event_store_app;
