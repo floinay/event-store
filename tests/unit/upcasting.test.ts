@@ -24,4 +24,21 @@ describe("upcaster registry", () => {
       UnknownEventVersionError,
     );
   });
+
+  it("is deterministic, preserves frozen input, and is idempotent at current version", () => {
+    const registry = new UpcasterRegistry();
+    registry.register("order.created", 1, (value) => ({
+      ...(value as Record<string, unknown>),
+      currency: "UAH",
+    }));
+    registry.setCurrentVersion("order.created", 2);
+    const input = Object.freeze({ id: "o1" });
+    const first = registry.upcast("order.created", 1, input);
+    const second = registry.upcast("order.created", 1, input);
+    expect(input).toEqual({ id: "o1" });
+    expect(first).toEqual(second);
+    const current = registry.upcast("order.created", 2, first.payload);
+    expect(current).toEqual(first);
+    expect(current.payload).toBe(first.payload);
+  });
 });
