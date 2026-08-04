@@ -603,6 +603,26 @@ suite("append SQL contract", () => {
     });
   });
 
+  it("rejects a recovery proof sampled on another promotion timeline", async () => {
+    const timeline = await pool.query<{ timeline_id: number }>(
+      "SELECT event_store.current_timeline_id() AS timeline_id",
+    );
+    await expect(
+      pool.query(
+        "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4::uuid,$5,$6,$7::bigint)",
+        [
+          "event_store_recovery_timeline_test",
+          "event-store-recovery-timeline-test",
+          "timeline-proof",
+          id(),
+          "timeline-proof",
+          "timeline-proof-consumer",
+          (timeline.rows[0]?.timeline_id ?? 0) + 1,
+        ],
+      ),
+    ).rejects.toMatchObject({ code: "P0001" });
+  });
+
   it("rejects append admission for a non-failover CDC slot", async () => {
     const original = await pool.query<{ cdc_slot_name: string }>(
       "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",

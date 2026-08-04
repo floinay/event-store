@@ -561,6 +561,12 @@ export class RecoveryCutoverCoordinator {
     const oldConnectorName = current.rows[0]?.cdc_connector_name;
     if (oldSlotName === undefined || oldConnectorName === undefined)
       throw new Error("current CDC ownership is unavailable");
+    const timeline = await this.pool.query<{ timeline_id: number }>(
+      "SELECT event_store.current_timeline_id() AS timeline_id",
+    );
+    const expectedTimelineId = timeline.rows[0]?.timeline_id;
+    if (expectedTimelineId === undefined)
+      throw new Error("current PostgreSQL timeline is unavailable");
     // Validate the database-owned failover invariant before retiring the old
     // cursor. The activation function repeats this check inside its cutover
     // transaction to cover races after this external preflight.
@@ -576,7 +582,7 @@ export class RecoveryCutoverCoordinator {
     // The activation transaction repeats it, and SQL accepts it only on the
     // current PostgreSQL promotion timeline.
     await this.pool.query(
-      "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4,$5,$6)",
+      "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4,$5,$6,$7)",
       [
         slotName,
         connectorName,
@@ -584,6 +590,7 @@ export class RecoveryCutoverCoordinator {
         verification.generationId,
         verification.replayId,
         verification.consumerGroupId,
+        expectedTimelineId,
       ],
     );
     await this.retirePreviousDelivery(
@@ -596,7 +603,7 @@ export class RecoveryCutoverCoordinator {
     try {
       await client.query("BEGIN");
       await client.query(
-        "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4,$5,$6)",
+        "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4,$5,$6,$7)",
         [
           slotName,
           connectorName,
@@ -604,6 +611,7 @@ export class RecoveryCutoverCoordinator {
           verification.generationId,
           verification.replayId,
           verification.consumerGroupId,
+          expectedTimelineId,
         ],
       );
       await client.query(
@@ -685,6 +693,10 @@ export class RecoveryCutoverCoordinator {
       config["table.include.list"] !== "event_store.events" ||
       config["slot.drop.on.stop"] !== "false" ||
       config["slot.failover"] !== "true" ||
+      config["snapshot.mode"] !== "initial" ||
+      config["snapshot.select.statement.overrides"] !== "event_store.events" ||
+      config["snapshot.select.statement.overrides.event_store.events"] !==
+        "SELECT * FROM event_store.events ORDER BY event_number" ||
       config["lsn.flush.mode"] !== "connector" ||
       config["offset.mismatch.strategy"] !== "trust_offset" ||
       config["errors.tolerance"] !== "none" ||

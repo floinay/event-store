@@ -72,6 +72,9 @@ describe("slot-loss recovery connector", () => {
       "slot.drop.on.stop": "false",
       "slot.failover": "true",
       "snapshot.mode": "initial",
+      "snapshot.select.statement.overrides": "event_store.events",
+      "snapshot.select.statement.overrides.event_store.events":
+        "SELECT * FROM event_store.events ORDER BY event_number",
       "lsn.flush.mode": "connector",
       "offset.mismatch.strategy": "trust_offset",
       "errors.tolerance": "none",
