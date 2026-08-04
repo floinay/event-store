@@ -17,8 +17,8 @@ afterEach(async () => {
 });
 
 async function compatibilityResult(
-  v1: Record<string, unknown>,
-  v2: Record<string, unknown>,
+  v1: unknown,
+  v2: unknown,
 ): Promise<Error | undefined> {
   const root = await mkdtemp(join(tmpdir(), "event-store-schema-"));
   temporaryRoots.push(root);
@@ -53,6 +53,7 @@ describe("JSON Schema compatibility checker", () => {
     ["propertyNames", { pattern: "^[a-z]+$" }],
     ["contains", { type: "string" }],
     ["$ref", "#/$defs/envelope"],
+    ["additionalProperties", { type: "string" }],
   ])("rejects a newly restrictive %s keyword", async (keyword, value) => {
     const next = {
       ...historicalEnvelope,
@@ -60,6 +61,15 @@ describe("JSON Schema compatibility checker", () => {
       $defs: { envelope: historicalEnvelope },
     };
     const error = await compatibilityResult(historicalEnvelope, next);
-    expect(error?.message).toContain(`${keyword} changed`);
+    expect(error?.message).toContain(
+      keyword === "additionalProperties"
+        ? "additional properties were narrowed"
+        : `${keyword} changed`,
+    );
+  });
+
+  it("rejects narrowing a boolean true schema", async () => {
+    const error = await compatibilityResult(true, false);
+    expect(error?.message).toContain("boolean true schema was narrowed");
   });
 });

@@ -129,6 +129,15 @@ function assertDoesNotNarrow(previous, next, label) {
 }
 
 function assertBackwardCompatible(previous, next, label) {
+  if (previous === true) {
+    if (next !== true)
+      throw new Error(`${label}: boolean true schema was narrowed`);
+    return;
+  }
+  if (previous === false) return;
+  if (next === true) return;
+  if (next === false)
+    throw new Error(`${label}: schema was narrowed to boolean false`);
   assertOpaqueKeywordsUnchanged(previous, next, label);
   for (const required of next.required ?? [])
     if (!(previous.required ?? []).includes(required))
@@ -159,23 +168,22 @@ function assertBackwardCompatible(previous, next, label) {
       throw new Error(`${label}: items was removed`);
     assertBackwardCompatible(previous.items, next.items, `${label}.items`);
   }
-  if (
-    previous.additionalProperties !== undefined &&
-    typeof previous.additionalProperties === "object"
-  ) {
-    if (typeof next.additionalProperties !== "object")
+  const previousAdditionalProperties = previous.additionalProperties ?? true;
+  const nextAdditionalProperties = next.additionalProperties ?? true;
+  if (typeof previousAdditionalProperties === "object") {
+    if (typeof nextAdditionalProperties !== "object")
       throw new Error(`${label}: additionalProperties changed`);
     assertBackwardCompatible(
-      previous.additionalProperties,
-      next.additionalProperties,
+      previousAdditionalProperties,
+      nextAdditionalProperties,
       `${label}.additionalProperties`,
     );
   }
   if (
-    previous.additionalProperties === true &&
-    next.additionalProperties === false
+    previousAdditionalProperties === true &&
+    nextAdditionalProperties !== true
   )
-    throw new Error(`${label}: additional properties became forbidden`);
+    throw new Error(`${label}: additional properties were narrowed`);
 }
 
 const files = await schemaFiles(schemaRoot);
