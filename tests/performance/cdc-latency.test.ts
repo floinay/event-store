@@ -155,10 +155,11 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     console.info(`CDC latency metrics: ${JSON.stringify(metrics)}`);
     expect(metrics.samples).toBe(sampleCount);
     expect(samples.every((sample) => sample >= 0)).toBe(true);
+    expect(samples.every((sample) => sample <= 50)).toBe(true);
     expect(metrics.p50).toBeLessThanOrEqual(50);
-    expect(metrics.mean).toBeLessThanOrEqual(80);
-    expect(metrics.p95).toBeLessThanOrEqual(100);
-    expect(metrics.p999).toBeLessThanOrEqual(200);
+    expect(metrics.p95).toBeLessThanOrEqual(50);
+    expect(metrics.p99).toBeLessThanOrEqual(50);
+    expect(metrics.p999).toBeLessThanOrEqual(50);
     expect(metrics.p99).toBeGreaterThanOrEqual(metrics.p95);
     expect(metrics.p999).toBeGreaterThanOrEqual(metrics.p99);
   }, 180_000);
