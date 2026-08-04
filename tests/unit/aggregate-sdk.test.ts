@@ -52,4 +52,36 @@ describe("aggregate reconstruction", () => {
       ),
     ).toThrow("event_gap");
   });
+
+  it("reconstructs 10,000 revisions from a snapshot and ordered tail", () => {
+    const events: StoredEvent[] = Array.from({ length: 10_000 }, (_, index) => {
+      const revision = index + 1;
+      return {
+        ...base,
+        eventId: `0198f99a-9b1c-7000-8000-${String(revision).padStart(12, "0")}`,
+        streamRevision: String(revision),
+        eventNumber: String(revision),
+      };
+    });
+    const definition = {
+      initial: 0,
+      evolve: (state: number, _: unknown) => state + 1,
+      decode: (_: StoredEvent) => undefined,
+    };
+    expect(
+      reconstruct(definition, events.slice(9_000), {
+        state: 9_000,
+        revision: 9_000n,
+      }),
+    ).toEqual({
+      state: 10_000,
+      revision: 10_000n,
+    });
+    expect(() =>
+      reconstruct(definition, events.slice(9_001), {
+        state: 9_000,
+        revision: 9_000n,
+      }),
+    ).toThrow("event_gap");
+  });
 });
