@@ -260,6 +260,11 @@ export class KafkaProjectionRunner {
             );
         };
         await assigned;
+        // `alignAssignment()` seeks to the durable PostgreSQL checkpoint.
+        // Kafka marks any batch fetched before that seek stale. It has not
+        // run a handler, so discarding it lets the post-seek batch resume at
+        // the authoritative offset without manufacturing a rebalance error.
+        if (!isRunning() || isStale()) return;
         messageLoop: for (const message of batch.messages) {
           assertCurrentAssignment();
           await this.crashBarrier?.hit("after_kafka_poll");
