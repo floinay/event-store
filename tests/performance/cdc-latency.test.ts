@@ -22,6 +22,9 @@ const hotStreamPercent = Number(process.env.LATENCY_HOT_STREAM_PERCENT ?? 0);
 const hotStreamCount = Number(process.env.LATENCY_HOT_STREAM_COUNT ?? 10);
 const producerCpuWorkMs = Number(process.env.LATENCY_PRODUCER_CPU_WORK_MS ?? 0);
 const consumerCpuWorkMs = Number(process.env.LATENCY_CONSUMER_CPU_WORK_MS ?? 0);
+const connectKafkaLatencyMs = Number(
+  process.env.LATENCY_CONNECT_KAFKA_LATENCY_MS ?? 0,
+);
 const latencyTestTimeoutMs = Math.max(180_000, durationMs + 60_000);
 
 interface AppendClient extends grpc.Client {
@@ -69,7 +72,13 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
   let client: AppendClient;
   let pool: Pool;
   beforeAll(async () => {
-    await stack.start({ cdc: true });
+    await stack.start({
+      cdc: true,
+      toxiproxy: connectKafkaLatencyMs > 0,
+      connectKafkaProxy: connectKafkaLatencyMs > 0,
+    });
+    if (connectKafkaLatencyMs > 0)
+      await stack.addConnectKafkaLatency(connectKafkaLatencyMs);
     pool = await stack.pool();
     process.env.DATABASE_URL = stack.databaseUrl;
     process.env.PRODUCER_SERVICE = "latency-probe";
@@ -141,6 +150,10 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         throw new Error("LATENCY_PRODUCER_CPU_WORK_MS must be non-negative");
       if (!Number.isFinite(consumerCpuWorkMs) || consumerCpuWorkMs < 0)
         throw new Error("LATENCY_CONSUMER_CPU_WORK_MS must be non-negative");
+      if (!Number.isFinite(connectKafkaLatencyMs) || connectKafkaLatencyMs < 0)
+        throw new Error(
+          "LATENCY_CONNECT_KAFKA_LATENCY_MS must be non-negative",
+        );
       if (process.env.RUN_RELEASE_LATENCY === "true" && durationMs < 1_800_000)
         throw new Error("release latency profile requires at least 30 minutes");
       const committed = new Map<string, number>();
