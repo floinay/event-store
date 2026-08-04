@@ -141,6 +141,9 @@ suite("projection recovery", () => {
     const generationId = uuidv7();
     const projectionName = "poison";
     await pool.query(
+      "CREATE SCHEMA projection_poison; CREATE TABLE projection_poison.events(event_id uuid PRIMARY KEY)",
+    );
+    await pool.query(
       "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ($1,$2,'building',clock_timestamp())",
       [projectionName, generationId],
     );
@@ -229,13 +232,17 @@ suite("projection recovery", () => {
       new ProjectionCheckpointStore(pool, identity),
       new ProjectionFailureReporter(pool, identity),
     );
-    const consumer = await runner.start();
+    let consumer = await runner.start();
     try {
-      await expect(published).resolves.toMatch(
+      const dlqKey = await published;
+      expect(dlqKey).toMatch(
         new RegExp(
           `^${projectionName}\\|${generationId}\\|event-store\\.events\\.v1\\|\\d+\\|\\d+$`,
         ),
       );
+      const [, , topic, partitionText, offsetText] = dlqKey.split("|");
+      const partition = Number(partitionText);
+      const offset = BigInt(offsetText ?? "-1");
       await expect(
         pool.query<{ attempt_count: number; dlq_published_at: string | null }>(
           "SELECT attempt_count,dlq_published_at FROM projection_runtime.failures WHERE projection_name=$1 AND generation_id=$2 AND event_id=$3",
@@ -244,6 +251,46 @@ suite("projection recovery", () => {
       ).resolves.toMatchObject({
         rows: [{ attempt_count: 8, dlq_published_at: expect.any(String) }],
       });
+      const checkpointBeforeResume = await new ProjectionCheckpointStore(
+        pool,
+        identity,
+      ).nextOffset(topic ?? "event-store.events.v1", partition);
+      expect(checkpointBeforeResume ?? 0n).toBeLessThanOrEqual(offset);
+      await consumer.disconnect();
+      const resumed = new KafkaProjectionRunner(
+        {
+          brokers: [stack.kafkaBroker()],
+          groupId: `poison-${uuidv7()}`,
+          topic: "event-store.events.v1",
+        },
+        new ProjectionTransactionRunner(
+          pool,
+          identity,
+          createProjectionEventTransformer(upcasters, schemas),
+        ),
+        async (client, event) => {
+          await client.query(
+            "INSERT INTO projection_poison.events(event_id) VALUES ($1)",
+            [event.eventId],
+          );
+        },
+        new ProjectionCheckpointStore(pool, identity),
+        new ProjectionFailureReporter(pool, identity),
+      );
+      consumer = await resumed.start();
+      await eventually(async () => {
+        const model = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM projection_poison.events WHERE event_id=$1",
+          [eventId],
+        );
+        return model.rows[0]?.count === 1;
+      });
+      await expect(
+        new ProjectionCheckpointStore(pool, identity).nextOffset(
+          topic ?? "event-store.events.v1",
+          partition,
+        ),
+      ).resolves.toBeGreaterThan(offset);
     } finally {
       await consumer.disconnect().catch(() => undefined);
       await dlq.disconnect().catch(() => undefined);
