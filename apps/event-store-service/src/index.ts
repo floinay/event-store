@@ -1,12 +1,16 @@
 import { join } from "node:path";
 
-export function connectQueueRatio(metrics: string): number {
+export function connectQueueRatio(metrics: string, connectorName: string): number {
   const metric = (name: string): number => {
     const line = metrics
       .split("\n")
-      .find((entry) => entry.startsWith(`${name}{`) || entry.startsWith(`${name} `));
-    if (line === undefined) throw new Error(`missing Connect metric ${name}`);
-    const value = Number(line.trim().split(/\s+/).at(-1));
+      .filter(
+        (entry) =>
+          (entry.startsWith(`${name}{`) || entry.startsWith(`${name} `)) &&
+          entry.includes(`connector="${connectorName}"`),
+      );
+    if (line.length !== 1) throw new Error(`missing or ambiguous Connect metric ${name}`);
+    const value = Number(line[0]!.trim().split(/\s+/).at(-1));
     if (!Number.isFinite(value) || value < 0)
       throw new Error(`invalid Connect metric ${name}`);
     return value;
@@ -287,7 +291,7 @@ export async function startServer(): Promise<grpc.Server> {
                   if (!result.ok) throw new Error("Connect metrics are unavailable");
                   return result.text();
                 });
-                if (connectQueueRatio(metrics) < 0.2)
+                if (connectQueueRatio(metrics, connectorName) < 0.2)
                   throw new Error("CDC Connect queue is saturated");
               }
             }

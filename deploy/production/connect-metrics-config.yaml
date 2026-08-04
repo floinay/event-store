@@ -2,7 +2,11 @@ hostPort: 127.0.0.1:9999
 rules:
   - pattern: 'debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>QueueRemainingCapacity'
     name: event_store_connect_queue_remaining_capacity
+    labels:
+      connector: "$1"
     type: GAUGE
   - pattern: 'debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>QueueTotalCapacity'
     name: event_store_connect_queue_total_capacity
+    labels:
+      connector: "$1"
     type: GAUGE
