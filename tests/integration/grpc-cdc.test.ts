@@ -216,7 +216,9 @@ suite("gRPC to CDC", () => {
         if (readiness.status === 200) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      await expect(fetch("http://127.0.0.1:50161/readyz")).resolves.toMatchObject({
+      await expect(
+        fetch("http://127.0.0.1:50161/readyz"),
+      ).resolves.toMatchObject({
         status: 200,
       });
       for (const [name, value] of Object.entries(previous)) {
@@ -742,7 +744,9 @@ suite("gRPC to CDC", () => {
         if (readiness.status === 200) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      await expect(fetch("http://127.0.0.1:50161/readyz")).resolves.toMatchObject({
+      await expect(
+        fetch("http://127.0.0.1:50161/readyz"),
+      ).resolves.toMatchObject({
         status: 200,
       });
       const directAfterRecovery = await pool.connect();

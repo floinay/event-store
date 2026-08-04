@@ -75,7 +75,9 @@ function sleep(milliseconds: number): Promise<void> {
 function conservativeDatabaseEpochMs(value: AppendResult): number {
   const epochMs = Date.parse(value.recordedAt);
   if (!Number.isFinite(epochMs))
-    throw new Error("append returned an invalid PostgreSQL recordedAt timestamp");
+    throw new Error(
+      "append returned an invalid PostgreSQL recordedAt timestamp",
+    );
   return epochMs;
 }
 

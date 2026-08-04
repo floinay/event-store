@@ -654,12 +654,17 @@ export class RecoveryCutoverCoordinator {
       });
       const partitions = offsets[0]?.partitions ?? [];
       const committed = new Map(
-        partitions.map((partition) => [partition.partition, BigInt(partition.offset)]),
+        partitions.map((partition) => [
+          partition.partition,
+          BigInt(partition.offset),
+        ]),
       );
-      if (barriers.rows.some((barrier) => {
-        const offset = committed.get(barrier.partition_no);
-        return offset === undefined || offset <= BigInt(barrier.kafka_offset);
-      }))
+      if (
+        barriers.rows.some((barrier) => {
+          const offset = committed.get(barrier.partition_no);
+          return offset === undefined || offset <= BigInt(barrier.kafka_offset);
+        })
+      )
         throw new Error(
           "recovery projection consumer group has not committed every barrier",
         );
@@ -1007,10 +1012,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const projectionName = process.env.REPLAY_PROJECTION_NAME;
   const generationId = process.env.REPLAY_GENERATION_ID;
   if (
-    action !== "start" &&
-    action !== "activate" &&
-    action !== "recovery-start" &&
-    action !== "recovery-activate" ||
+    (action !== "start" &&
+      action !== "activate" &&
+      action !== "recovery-start" &&
+      action !== "recovery-activate") ||
     replayId === undefined ||
     coordinatorDatabaseUrl === undefined ||
     connectorUrl === undefined ||
@@ -1040,7 +1045,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       >[1],
     };
     const barriers =
-      action === "start" ? await startReplay(options) : await startRecovery(options);
+      action === "start"
+        ? await startReplay(options)
+        : await startRecovery(options);
     console.log(JSON.stringify({ action, ...identity, barriers }, null, 2));
   } else {
     const verificationModule = process.env.REPLAY_VERIFICATION_MODULE;
@@ -1051,7 +1058,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const pool = new Pool({ connectionString: coordinatorDatabaseUrl });
     const coordinator = new ReplayCoordinator(pool, connectorUrl, brokers);
     try {
-      const verification = await loadReplayVerification(verificationModule, identity);
+      const verification = await loadReplayVerification(
+        verificationModule,
+        identity,
+      );
       if (action === "activate") {
         await coordinator.activate(identity, verification);
         await coordinator.teardown(identity);
@@ -1061,7 +1071,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
           throw new Error(
             "RECOVERY_WAL_BUDGET_BYTES is required for REPLAY_ACTION=recovery-activate",
           );
-        await new RecoveryCutoverCoordinator(pool, connectorUrl, brokers).activate(
+        await new RecoveryCutoverCoordinator(
+          pool,
+          connectorUrl,
+          brokers,
+        ).activate(
           recoverySlotName(replayId),
           recoveryConnectorName(replayId),
           BigInt(rawBudget),

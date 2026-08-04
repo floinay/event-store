@@ -108,9 +108,7 @@ describe("PostgresEventStore append retries", () => {
     const fake = poolThatFails(new Error("append failed"), 0);
     const result = await new PostgresEventStore(fake.pool).append(input());
     expect(result.currentRevision).toBe("1");
-    expect(result.commitEpochMs).toBe(
-      Date.parse("2026-08-04T10:12:18.120Z"),
-    );
+    expect(result.commitEpochMs).toBe(Date.parse("2026-08-04T10:12:18.120Z"));
     expect(fake.appendCalls()).toBe(1);
   });
 });
