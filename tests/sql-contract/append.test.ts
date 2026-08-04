@@ -812,16 +812,38 @@ suite("append SQL contract", () => {
       ).resolves.toMatchObject({
         rows: [{ cdc_reconciliation_required: true }],
       });
+      await pool.query(
+        `UPDATE event_store.runtime_config
+            SET cdc_delivery_healthy=true,cdc_reconciliation_required=false,
+                cdc_reconciled_incident_epoch=cdc_delivery_incident_epoch
+          WHERE singleton`,
+      );
+      await appender.query("BEGIN");
+      await appender.query(
+        "SELECT event_store.append_recovery_barrier($1,$2,$3,$4)",
+        ["fence-lock", 0, id(), id()],
+      );
+      completed = false;
+      const closeBarrierDelivery = healthCheck
+        .query("SELECT event_store.set_cdc_delivery_health(false)")
+        .finally(() => {
+          completed = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(completed).toBe(false);
+      await appender.query("ROLLBACK");
+      await closeBarrierDelivery;
       const definitions = await pool.query<{ definition: string }>(
         `SELECT pg_get_functiondef(proc.oid) AS definition
            FROM pg_proc proc
           WHERE proc.oid = ANY (ARRAY[
             'event_store.append_v1(text,text,text,uuid,uuid,text,bigint,jsonb,jsonb)'::regprocedure,
             'event_store.append_v1_critical(text,text,text,uuid,uuid,text,bigint,jsonb,jsonb)'::regprocedure,
-            'event_store.append_cdc_latency_probe(uuid)'::regprocedure
+            'event_store.append_cdc_latency_probe(uuid)'::regprocedure,
+            'event_store.append_recovery_barrier(text,integer,uuid,uuid)'::regprocedure
           ])`,
       );
-      expect(definitions.rows).toHaveLength(3);
+      expect(definitions.rows).toHaveLength(4);
       expect(
         definitions.rows.every((row) =>
           /runtime_config WHERE singleton FOR SHARE/.test(row.definition),
