@@ -361,6 +361,12 @@ export async function startServer(): Promise<grpc.Server> {
     ),
   );
   server.start();
+  const grpcShutdown = server.tryShutdown.bind(server);
+  server.tryShutdown = (callback) => {
+    grpcShutdown(() => {
+      void pool.end().finally(callback);
+    });
+  };
   return server;
 }
 

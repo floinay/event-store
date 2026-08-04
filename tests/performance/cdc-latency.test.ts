@@ -1,12 +1,21 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
+import * as grpc from "@grpc/grpc-js";
+import * as protoLoader from "@grpc/proto-loader";
+import { join } from "node:path";
 import { uuidv7 } from "@event-store/contracts";
-import { PostgresEventStore } from "@event-store/postgres-store";
+import { startServer } from "../../apps/event-store-service/dist/index.js";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
-import type { Pool } from "pg";
 
 const suite = process.env.RUN_LATENCY === "true" ? describe : describe.skip;
 const sampleCount = Number(process.env.LATENCY_SAMPLE_COUNT ?? 100);
+
+interface AppendClient extends grpc.Client {
+  AppendToStream(
+    request: Record<string, unknown>,
+    callback: (error: grpc.ServiceError | null) => void,
+  ): void;
+}
 
 function percentile(samples: readonly number[], quantile: number): number {
   return samples[
@@ -16,15 +25,34 @@ function percentile(samples: readonly number[], quantile: number): number {
 
 suite("PostgreSQL commit to Kafka consumer latency", () => {
   const stack = new EventStoreStack();
-  let pool: Pool;
-  let store: PostgresEventStore;
+  let server: grpc.Server;
+  let client: AppendClient;
   beforeAll(async () => {
     await stack.start({ cdc: true });
-    pool = await stack.pool();
-    store = new PostgresEventStore(pool);
+    process.env.DATABASE_URL = stack.databaseUrl;
+    process.env.PRODUCER_SERVICE = "latency-probe";
+    process.env.GRPC_LISTEN_ADDRESS = "127.0.0.1:50062";
+    process.env.GRPC_ALLOW_INSECURE = "true";
+    server = await startServer();
+    const definition = protoLoader.loadSync(
+      join(process.cwd(), "packages/contracts/proto/event_store.proto"),
+      { keepCase: true, longs: String, enums: String, defaults: false },
+    );
+    const service = (
+      grpc.loadPackageDefinition(definition) as unknown as {
+        eventstore: {
+          v1: { EventStoreService: grpc.ServiceClientConstructor };
+        };
+      }
+    ).eventstore.v1.EventStoreService;
+    client = new service(
+      "127.0.0.1:50062",
+      grpc.credentials.createInsecure(),
+    ) as AppendClient;
   }, 180_000);
   afterAll(async () => {
-    await pool?.end();
+    client?.close();
+    await new Promise<void>((resolve) => server?.tryShutdown(() => resolve()));
     await stack.stop();
   }, 60_000);
 
@@ -87,57 +115,16 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         },
       });
     });
-    await store.append({
-      producerService: "latency-probe",
-      namespace: "latency",
-      aggregateType: "Probe",
-      aggregateId: uuidv7(),
-      requestId: warmupRequestId,
-      expectedRevision: { kind: "no_stream" },
-      context: {
-        requestId: warmupRequestId,
-        correlationId: uuidv7(),
-        causationId: null,
-        actor: { kind: "service", subjectRef: "latency-probe" },
-      },
-      events: [
-        {
-          eventName: "probe.appended",
-          schemaVersion: 1,
-          occurredAt: new Date().toISOString(),
-          payload: { warmup: true },
-        },
-      ],
-    });
+    await append(client, warmupRequestId, uuidv7(), "warmup");
     await warmup;
     for (let index = 0; index < sampleCount; index += 1) {
       const requestId = uuidv7();
       const aggregateId = uuidv7();
       // Register before append so a very fast consumer cannot drop the sample.
       committed.set(requestId, Number.NaN);
-      await store.append({
-        producerService: "latency-probe",
-        namespace: "latency",
-        aggregateType: "Probe",
-        aggregateId,
-        requestId,
-        expectedRevision: { kind: "no_stream" },
-        context: {
-          requestId,
-          correlationId: uuidv7(),
-          causationId: null,
-          actor: { kind: "service", subjectRef: "latency-probe" },
-        },
-        events: [
-          {
-            eventName: "probe.appended",
-            schemaVersion: 1,
-            occurredAt: new Date().toISOString(),
-            payload: { index: String(index) },
-          },
-        ],
-      });
-      committed.set(requestId, performance.now());
+      const startedAt = performance.now();
+      await append(client, requestId, aggregateId, String(index));
+      committed.set(requestId, startedAt);
       if (
         committed.size === sampleCount &&
         [...committed.keys()].every(
@@ -171,3 +158,37 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     expect(metrics.p999).toBeGreaterThanOrEqual(metrics.p99);
   }, 180_000);
 });
+
+function append(
+  client: AppendClient,
+  requestId: string,
+  aggregateId: string,
+  index: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    client.AppendToStream(
+      {
+        request_id: requestId,
+        namespace: "latency",
+        aggregate_type: "Probe",
+        aggregate_id: aggregateId,
+        expected_revision: { no_stream: {} },
+        context: {
+          correlation_id: uuidv7(),
+          actor_json: Buffer.from(
+            JSON.stringify({ kind: "service", subjectRef: "latency-probe" }),
+          ),
+        },
+        events: [
+          {
+            event_name: "probe.appended",
+            schema_version: 1,
+            occurred_at: new Date().toISOString(),
+            payload_json: Buffer.from(JSON.stringify({ index })),
+          },
+        ],
+      },
+      (error) => (error === null ? resolve() : reject(error)),
+    );
+  });
+}
