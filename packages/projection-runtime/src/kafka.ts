@@ -155,11 +155,17 @@ export class KafkaProjectionRunner {
       );
     };
     await consumer.run({
-      eachBatch: async ({ batch, pause, heartbeat, isRunning, isStale }) => {
+      eachBatchAutoResolve: false,
+      eachBatch: async ({
+        batch,
+        pause,
+        heartbeat,
+        isRunning,
+        isStale,
+        resolveOffset,
+      }) => {
         const topic = batch.topic;
         const partition = batch.partition;
-        const message = batch.messages[0];
-        if (message === undefined) return;
         const assertCurrentAssignment = (): void => {
           if (!isRunning() || isStale())
             throw new Error(
@@ -167,165 +173,172 @@ export class KafkaProjectionRunner {
             );
         };
         await assigned;
-        assertCurrentAssignment();
-        if (message.key === null || message.value === null) {
-          pause();
-          throw new Error("Kafka event record requires a key and value");
-        }
-        const headers = Object.fromEntries(
-          Object.entries(message.headers ?? {}).map(([key, value]) => [
-            key,
-            Array.isArray(value) ? value[0]?.toString() : value?.toString(),
-          ]),
-        );
-        const record = {
-          topic,
-          partition,
-          offset: BigInt(message.offset),
-          key: message.key.toString(),
-          headers,
-          value: message.value,
-        };
-        if (expectedOffsets.get(`${topic}/${partition}`) === undefined)
-          await alignAssignment();
-        const persistedOffset = await this.checkpointStore.nextOffset(
-          topic,
-          partition,
-        );
-        if (persistedOffset !== undefined)
-          expectedOffsets.set(`${topic}/${partition}`, persistedOffset);
-        const expected = expectedOffsets.get(`${topic}/${partition}`);
-        if (expected === undefined)
-          throw new Error(`partition ${topic}/${partition} was not assigned`);
-        if (record.offset < expected) {
-          await consumer.commitOffsets([
-            { topic, partition, offset: expected.toString() },
-          ]);
-          return;
-        }
-        if (record.offset > expected) {
-          const attempt = `${topic}/${partition}/${expected}/${record.offset}`;
-          if (!readCommittedGapAttempts.has(attempt)) {
-            const offsets = await admin.fetchTopicOffsets(topic, {
-              isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
-            });
-            const low = offsets.find(
-              (offset) => offset.partition === partition,
-            )?.low;
-            if (low === undefined || BigInt(low) > expected) {
-              pause();
-              throw new Error(
-                `projection Kafka gap is below the retained range for ${topic}/${partition}: expected ${expected}, low ${low ?? "unknown"}`,
-              );
-            }
-            // Seek to the durable physical offset once. If the same
-            // read_committed record is returned again, Kafka has proved that
-            // all intervening retained log entries are invisible transaction
-            // control or aborted records; a delete-only event topic cannot
-            // otherwise have a visible interior gap.
-            readCommittedGapAttempts.add(attempt);
-            await alignPartition({ topic, partition });
-            return;
-          }
-          readCommittedGapAttempts.delete(attempt);
-        }
-        let failure: unknown;
-        const processingDeadline = Date.now() + 10_000;
-        for (const delay of projectionRetryDelaysMs) {
+        messageLoop: for (const message of batch.messages) {
           assertCurrentAssignment();
-          if (Date.now() >= processingDeadline)
-            throw new Error(
-              `projection retry exceeded 10s revoke bound for ${topic}/${partition}`,
-            );
-          try {
-            await withHeartbeats(
-              () =>
-                this.transactionRunner.process(record, this.apply, {
-                  allowReadCommittedOffsetGap: record.offset > expected,
-                  transactionTimeoutMs: 10_000,
-                }),
-              heartbeat,
-            );
-          } catch (error) {
-            failure = error;
-            await withHeartbeats(
-              () =>
-                wait(
-                  Math.min(delay, Math.max(0, processingDeadline - Date.now())),
-                ),
-              heartbeat,
-            );
+          if (message.key === null || message.value === null) {
+            pause();
+            throw new Error("Kafka event record requires a key and value");
+          }
+          const headers = Object.fromEntries(
+            Object.entries(message.headers ?? {}).map(([key, value]) => [
+              key,
+              Array.isArray(value) ? value[0]?.toString() : value?.toString(),
+            ]),
+          );
+          const record = {
+            topic,
+            partition,
+            offset: BigInt(message.offset),
+            key: message.key.toString(),
+            headers,
+            value: message.value,
+          };
+          if (expectedOffsets.get(`${topic}/${partition}`) === undefined)
+            await alignAssignment();
+          const persistedOffset = await this.checkpointStore.nextOffset(
+            topic,
+            partition,
+          );
+          if (persistedOffset !== undefined)
+            expectedOffsets.set(`${topic}/${partition}`, persistedOffset);
+          const expected = expectedOffsets.get(`${topic}/${partition}`);
+          if (expected === undefined)
+            throw new Error(`partition ${topic}/${partition} was not assigned`);
+          if (record.offset < expected) {
+            await consumer.commitOffsets([
+              { topic, partition, offset: expected.toString() },
+            ]);
+            resolveOffset(message.offset);
             continue;
           }
-          for (const commitDelay of projectionRetryDelaysMs) {
+          if (record.offset > expected) {
+            const attempt = `${topic}/${partition}/${expected}/${record.offset}`;
+            if (!readCommittedGapAttempts.has(attempt)) {
+              const offsets = await admin.fetchTopicOffsets(topic, {
+                isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
+              });
+              const low = offsets.find(
+                (offset) => offset.partition === partition,
+              )?.low;
+              if (low === undefined || BigInt(low) > expected) {
+                pause();
+                throw new Error(
+                  `projection Kafka gap is below the retained range for ${topic}/${partition}: expected ${expected}, low ${low ?? "unknown"}`,
+                );
+              }
+              // Seek to the durable physical offset once. If the same
+              // read_committed record is returned again, Kafka has proved that
+              // all intervening retained log entries are invisible transaction
+              // control or aborted records; a delete-only event topic cannot
+              // otherwise have a visible interior gap.
+              readCommittedGapAttempts.add(attempt);
+              await alignPartition({ topic, partition });
+              return;
+            }
+            readCommittedGapAttempts.delete(attempt);
+          }
+          let failure: unknown;
+          const processingDeadline = Date.now() + 10_000;
+          for (const delay of projectionRetryDelaysMs) {
             assertCurrentAssignment();
             if (Date.now() >= processingDeadline)
               throw new Error(
-                `projection commit retry exceeded 10s revoke bound for ${topic}/${partition}`,
+                `projection retry exceeded 10s revoke bound for ${topic}/${partition}`,
               );
             try {
-              await consumer.commitOffsets([
-                {
-                  topic,
-                  partition,
-                  offset: (BigInt(message.offset) + 1n).toString(),
-                },
-              ]);
-              expectedOffsets.set(
-                `${topic}/${partition}`,
-                BigInt(message.offset) + 1n,
+              await withHeartbeats(
+                () =>
+                  this.transactionRunner.process(record, this.apply, {
+                    allowReadCommittedOffsetGap: record.offset > expected,
+                    transactionTimeoutMs: 10_000,
+                  }),
+                heartbeat,
               );
-              return;
-            } catch (commitError) {
-              failure = commitError;
+            } catch (error) {
+              failure = error;
               await withHeartbeats(
                 () =>
                   wait(
                     Math.min(
-                      commitDelay,
+                      delay,
                       Math.max(0, processingDeadline - Date.now()),
                     ),
                   ),
                 heartbeat,
               );
+              continue;
             }
+            for (const commitDelay of projectionRetryDelaysMs) {
+              assertCurrentAssignment();
+              if (Date.now() >= processingDeadline)
+                throw new Error(
+                  `projection commit retry exceeded 10s revoke bound for ${topic}/${partition}`,
+                );
+              try {
+                await consumer.commitOffsets([
+                  {
+                    topic,
+                    partition,
+                    offset: (BigInt(message.offset) + 1n).toString(),
+                  },
+                ]);
+                expectedOffsets.set(
+                  `${topic}/${partition}`,
+                  BigInt(message.offset) + 1n,
+                );
+                resolveOffset(message.offset);
+                continue messageLoop;
+              } catch (commitError) {
+                failure = commitError;
+                await withHeartbeats(
+                  () =>
+                    wait(
+                      Math.min(
+                        commitDelay,
+                        Math.max(0, processingDeadline - Date.now()),
+                      ),
+                    ),
+                  heartbeat,
+                );
+              }
+            }
+            // The DB checkpoint is durable. Retrying this record as a duplicate is
+            // safe; it must never be classified as a poisoned business event.
+            throw failure;
           }
-          // The DB checkpoint is durable. Retrying this record as a duplicate is
-          // safe; it must never be classified as a poisoned business event.
+          try {
+            const envelope = rawEnvelope(message.value);
+            await this.failureReporter.record(
+              record,
+              envelope,
+              failure,
+              projectionRetryDelaysMs.length,
+            );
+            await producer.send({
+              topic: this.dlqTopic,
+              messages: [
+                {
+                  key: `${this.config.groupId}|${topic}|${partition}|${message.offset}`,
+                  value: JSON.stringify({
+                    projection: this.config.groupId,
+                    topic,
+                    partition,
+                    offset: message.offset,
+                    error:
+                      failure instanceof Error
+                        ? failure.message
+                        : String(failure),
+                    envelope,
+                  }),
+                },
+              ],
+            });
+            await this.failureReporter.markDlqPublished(record);
+          } finally {
+            pause();
+          }
           throw failure;
         }
-        try {
-          const envelope = rawEnvelope(message.value);
-          await this.failureReporter.record(
-            record,
-            envelope,
-            failure,
-            projectionRetryDelaysMs.length,
-          );
-          await producer.send({
-            topic: this.dlqTopic,
-            messages: [
-              {
-                key: `${this.config.groupId}|${topic}|${partition}|${message.offset}`,
-                value: JSON.stringify({
-                  projection: this.config.groupId,
-                  topic,
-                  partition,
-                  offset: message.offset,
-                  error:
-                    failure instanceof Error
-                      ? failure.message
-                      : String(failure),
-                  envelope,
-                }),
-              },
-            ],
-          });
-          await this.failureReporter.markDlqPublished(record);
-        } finally {
-          pause();
-        }
-        throw failure;
       },
     });
     try {
