@@ -37,7 +37,7 @@ export async function benchmark(
             eventName: "benchmark.appended",
             schemaVersion: 1,
             occurredAt: new Date().toISOString(),
-            payload: { index },
+            payload: { index: String(index) },
           },
         ],
       });

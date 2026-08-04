@@ -106,7 +106,7 @@ export async function appendReplayBarriers(
           eventName: "system.replaybarrier",
           schemaVersion: 1,
           occurredAt: new Date().toISOString(),
-          payload: { replayId, partition },
+          payload: { replayId, partition: String(partition) },
         },
       ],
     });
@@ -173,7 +173,7 @@ export class ReplayCoordinator {
       row === undefined ||
       row.event_envelope.eventName !== "system.replaybarrier" ||
       payload?.replayId !== identity.replayId ||
-      payload.partition !== partition ||
+      payload.partition !== String(partition) ||
       kafkaDefaultPartition(row.partition_key) !== partition
     )
       throw new Error("replay barrier does not match its canonical event");

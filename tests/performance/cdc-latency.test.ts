@@ -133,7 +133,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
             eventName: "probe.appended",
             schemaVersion: 1,
             occurredAt: new Date().toISOString(),
-            payload: { index },
+            payload: { index: String(index) },
           },
         ],
       });

@@ -82,6 +82,29 @@ export function assertNoDirectPii(
   }
 }
 
+/** Numeric JSON lexemes are not stable across PostgreSQL numeric and JS Number. */
+export function assertNoJsonNumbers(
+  value: unknown,
+  path = "$",
+  seen = new WeakSet<object>(),
+): void {
+  if (typeof value === "number")
+    throw new Error(
+      `JSON numbers are prohibited; use a decimal string: ${path}`,
+    );
+  if (value === null || typeof value !== "object") return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) =>
+      assertNoJsonNumbers(entry, `${path}[${index}]`, seen),
+    );
+    return;
+  }
+  for (const [key, nested] of Object.entries(value))
+    assertNoJsonNumbers(nested, `${path}.${key}`, seen);
+}
+
 /** Generates an RFC 9562 UUIDv7 for request and aggregate identifiers. */
 export function uuidv7(now = Date.now()): string {
   if (!Number.isSafeInteger(now) || now < 0 || now >= 2 ** 48)

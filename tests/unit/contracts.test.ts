@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertNoDirectPii,
+  assertNoJsonNumbers,
   canonicalJson,
   partitionKey,
 } from "@event-store/contracts";
@@ -38,5 +39,12 @@ describe("event contracts", () => {
 
   it("uses PostgreSQL C-collation ordering for Unicode keys", () => {
     expect(canonicalJson({ "😀": 2, "�": 1 })).toBe('{"�":1,"😀":2}');
+  });
+
+  it("rejects numeric JSON values before canonical hashing", () => {
+    expect(() => assertNoJsonNumbers({ amount: 1.0 })).toThrow(
+      "decimal string",
+    );
+    expect(() => assertNoJsonNumbers({ amount: "1.0" })).not.toThrow();
   });
 });
