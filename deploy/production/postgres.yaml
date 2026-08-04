@@ -24,7 +24,33 @@ spec:
     synchronizeReplicas:
       enabled: true
     updateInterval: 5
+  backup:
+    target: prefer-standby
+    retentionPolicy: "35d"
+    barmanObjectStore:
+      destinationPath: s3://event-store-backups/production
+      s3Credentials:
+        accessKeyId:
+          name: event-store-backup-s3
+          key: access-key-id
+        secretAccessKey:
+          name: event-store-backup-s3
+          key: secret-access-key
+      wal:
+        compression: gzip
   storage:
     size: 200Gi
   monitoring:
     enablePodMonitor: true
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: event-store-postgres-daily
+spec:
+  schedule: "0 0 0 * * *"
+  backupOwnerReference: self
+  cluster:
+    name: event-store-postgres
+  method: barmanObjectStore
+  target: prefer-standby

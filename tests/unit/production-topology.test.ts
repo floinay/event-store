@@ -16,6 +16,9 @@ describe("production HA topology", () => {
     expect(postgres).toContain("minSyncReplicas: 1");
     expect(postgres).toContain("synchronizeLogicalDecoding: true");
     expect(postgres).toContain("synchronizeReplicas:");
+    expect(postgres).toContain('retentionPolicy: "35d"');
+    expect(postgres).toContain("kind: ScheduledBackup");
+    expect(postgres).toContain('schedule: "0 0 0 * * *"');
     expect(kafka).toContain("replicas: 3");
     expect(kafka).toContain("roles: [controller, broker]");
     expect(kafka).toContain("min.insync.replicas: 2");
