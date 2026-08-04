@@ -418,6 +418,24 @@ suite("append SQL contract", () => {
       ).rejects.toMatchObject({ code: "22023" });
   });
 
+  it("rejects direct SQL PII fields before a snapshot is stored", async () => {
+    await expect(
+      pool.query(
+        "SELECT event_store.put_snapshot_v1($1,$2,$3,$4,$5,$6,$7::jsonb,$8)",
+        [
+          "orders",
+          "Order",
+          id(),
+          "1000",
+          "a".repeat(64),
+          1,
+          JSON.stringify({ email: "person@example.com" }),
+          Buffer.alloc(32),
+        ],
+      ),
+    ).rejects.toMatchObject({ code: "22023" });
+  });
+
   it("rejects direct SQL numbers that cannot preserve the consumer hash", async () => {
     const common = [
       "orders-command",

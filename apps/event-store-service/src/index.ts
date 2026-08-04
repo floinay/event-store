@@ -77,7 +77,12 @@ import { createServer } from "node:http";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { Pool } from "pg";
-import { EventContextSchema, UuidV7, uuidv7 } from "@event-store/contracts";
+import {
+  EventContextSchema,
+  UuidV7,
+  assertNoDirectPii,
+  uuidv7,
+} from "@event-store/contracts";
 import { ZodError } from "zod";
 import {
   PostgresEventStore,
@@ -369,6 +374,7 @@ function parseState(value: Buffer): Record<string, unknown> {
       code: "22023",
     });
   }
+  assertNoDirectPii(parsed);
   return parsed as Record<string, unknown>;
 }
 

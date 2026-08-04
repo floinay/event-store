@@ -269,6 +269,7 @@ export class PostgresEventStore {
     state: Record<string, unknown>;
     stateSha256?: Buffer;
   }): Promise<void> {
+    assertNoDirectPii(input.state);
     const computedHash = createHash("sha256")
       .update(canonicalJson(input.state))
       .digest();

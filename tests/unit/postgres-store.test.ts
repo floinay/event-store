@@ -58,6 +58,25 @@ function poolThatFails(error: Error & { code?: string }, failures: number) {
 }
 
 describe("PostgresEventStore append retries", () => {
+  it("rejects direct PII in snapshot state before opening a database session", async () => {
+    const pool = {
+      connect: async () => {
+        throw new Error("must not connect");
+      },
+    } as never;
+    await expect(
+      new PostgresEventStore(pool).putSnapshot({
+        namespace: "orders",
+        aggregateType: "Order",
+        aggregateId: uuidv7(),
+        revision: 1000n,
+        reducerVersion: "a".repeat(64),
+        stateSchemaVersion: 1,
+        state: { email: "person@example.com" },
+      }),
+    ).rejects.toThrow("direct PII");
+  });
+
   it("retries database deadlocks with the identical request", async () => {
     const error = Object.assign(new Error("deadlock detected"), {
       code: "40P01",
