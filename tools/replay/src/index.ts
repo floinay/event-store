@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { Pool } from "pg";
-import { partitionKey, uuidv7 } from "@event-store/contracts";
+import { partitionKey } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
 
 export interface ReplayIdentity {
