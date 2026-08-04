@@ -25,6 +25,7 @@ export interface ProjectionIdentity {
 export type ProjectionHandler = (
   client: PoolClient,
   event: StoredEvent,
+  signal: AbortSignal,
 ) => Promise<void>;
 export type ProjectionEventTransformer = (event: StoredEvent) => StoredEvent;
 
@@ -98,6 +99,9 @@ export class ProjectionIntegrityError extends Error {
 }
 export class ProjectionRetentionError extends Error {
   readonly code = "projection_rebuild_required";
+}
+export class ProjectionHandlerTimeoutError extends Error {
+  readonly code = "projection_handler_timeout";
 }
 
 export const projectionRetryDelaysMs = [
@@ -271,6 +275,8 @@ export class ProjectionTransactionRunner {
     const absorbTerminalClientError = (): void => undefined;
     client.on("error", absorbTerminalClientError);
     let discardClient = false;
+    const abort = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await client.query("BEGIN");
       if (options.transactionTimeoutMs !== undefined)
@@ -321,7 +327,24 @@ export class ProjectionTransactionRunner {
           throw new ProjectionIntegrityError(
             "event id was previously observed with another hash",
           );
-      } else await apply(client, event);
+      } else {
+        const applied = apply(client, event, abort.signal);
+        if (options.transactionTimeoutMs === undefined) await applied;
+        else
+          await Promise.race([
+            applied,
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(() => {
+                abort.abort();
+                reject(
+                  new ProjectionHandlerTimeoutError(
+                    `projection handler exceeded ${options.transactionTimeoutMs}ms`,
+                  ),
+                );
+              }, options.transactionTimeoutMs);
+            }),
+          ]);
+      }
       await client.query(
         `INSERT INTO projection_runtime.checkpoints(projection_name,generation_id,topic_name,partition_no,next_offset,last_event_id,updated_at)
          VALUES ($1,$2,$3,$4,$5,$6,clock_timestamp())
@@ -341,10 +364,13 @@ export class ProjectionTransactionRunner {
     } catch (error) {
       // transaction_timeout intentionally terminates the backend. Never place
       // that connection back in the pool after PostgreSQL reports 25P04.
-      discardClient = (error as { code?: unknown }).code === "25P04";
+      discardClient =
+        (error as { code?: unknown }).code === "25P04" ||
+        error instanceof ProjectionHandlerTimeoutError;
       await client.query("ROLLBACK").catch(() => undefined);
       throw error;
     } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
       client.release(
         discardClient ? new Error("transaction timeout") : undefined,
       );
