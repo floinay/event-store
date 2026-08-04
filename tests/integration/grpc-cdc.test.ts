@@ -158,6 +158,9 @@ suite("gRPC to CDC", () => {
       (result) => result.text(),
     );
     expect(metrics).toContain("event_store_append_total");
+    expect(metrics).toContain("event_store_append_conflicts_total");
+    expect(metrics).toContain("event_store_append_unknown_outcomes_total");
+    expect(metrics).toContain("event_store_db_pool_waiting");
   });
 
   it("recovers an idempotent append after a crash boundary past PostgreSQL commit", async () => {

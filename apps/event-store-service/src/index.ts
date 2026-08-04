@@ -309,6 +309,8 @@ export async function startServer(
   const metrics = {
     appendCount: 0,
     appendFailureCount: 0,
+    appendConflictCount: 0,
+    appendUnknownOutcomeCount: 0,
     appendDurationSeconds: 0,
   };
   const connectUrl = process.env.CONNECT_URL;
@@ -332,7 +334,12 @@ export async function startServer(
                 .end(
                   `event_store_append_total ${metrics.appendCount}\n` +
                     `event_store_append_failures_total ${metrics.appendFailureCount}\n` +
-                    `event_store_append_duration_seconds_sum ${metrics.appendDurationSeconds}\n`,
+                    `event_store_append_conflicts_total ${metrics.appendConflictCount}\n` +
+                    `event_store_append_unknown_outcomes_total ${metrics.appendUnknownOutcomeCount}\n` +
+                    `event_store_append_duration_seconds_sum ${metrics.appendDurationSeconds}\n` +
+                    `event_store_db_pool_total ${pool.totalCount}\n` +
+                    `event_store_db_pool_idle ${pool.idleCount}\n` +
+                    `event_store_db_pool_waiting ${pool.waitingCount}\n`,
                 );
               return;
             }
@@ -474,6 +481,13 @@ export async function startServer(
         metrics.appendDurationSeconds += (performance.now() - started) / 1_000;
       } catch (error) {
         metrics.appendFailureCount += 1;
+        const source = error as {
+          code?: unknown;
+          appendDispatched?: unknown;
+        };
+        if (source.code === "40001") metrics.appendConflictCount += 1;
+        if (source.appendDispatched === true && source.code !== "40001")
+          metrics.appendUnknownOutcomeCount += 1;
         callback(
           errorFrom(
             error,
