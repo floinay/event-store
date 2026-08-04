@@ -161,7 +161,7 @@ EOF
         "-c",
         "synchronous_commit=on",
         "-c",
-        "track_commit_timestamp=off",
+        "track_commit_timestamp=on",
         "-c",
         "archive_mode=on",
         "-c",

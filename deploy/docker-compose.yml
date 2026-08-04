@@ -23,6 +23,7 @@ services:
         "archive_timeout=60s",
         "-c",
         "archive_command=mkdir -p /var/lib/postgresql/archive && test ! -f /var/lib/postgresql/archive/%f && cp %p /var/lib/postgresql/archive/%f",
+        "track_commit_timestamp=on",
       ]
     environment:
       POSTGRES_USER: postgres

@@ -32,7 +32,9 @@ function poolThatFails(error: Error & { code?: string }, failures: number) {
   let appendCalls = 0;
   const client = {
     query: async (sql: string) => {
-      if (!sql.startsWith("SELECT event_store.append_v1")) return { rows: [] };
+      if (sql.includes("pg_xact_commit_timestamp"))
+        return { rows: [{ commit_epoch_ms: "1785924738120" }] };
+      if (!sql.includes("event_store.append_v1")) return { rows: [] };
       appendCalls += 1;
       if (appendCalls <= failures) throw error;
       return {
@@ -45,6 +47,7 @@ function poolThatFails(error: Error & { code?: string }, failures: number) {
               recordedAt: "2026-08-04T10:12:18.120Z",
               events: [],
             },
+            transaction_id: "123",
           },
         ],
       };

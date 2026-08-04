@@ -95,10 +95,19 @@ export class PostgresEventStore {
                 context.trafficClass === "critical",
               ],
             );
-          let result: { rows: { append_v1: AppendResult }[] };
+          let result: {
+            rows: { append_v1: AppendResult; transaction_id: string }[];
+          };
           try {
-            result = await client.query<{ append_v1: AppendResult }>(
-              `SELECT event_store.${this.useCriticalAppendFunction ? "append_v1_critical" : "append_v1"}($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb) AS append_v1`,
+            result = await client.query<{
+              append_v1: AppendResult;
+              transaction_id: string;
+            }>(
+              `WITH appended AS (
+                 SELECT event_store.${this.useCriticalAppendFunction ? "append_v1_critical" : "append_v1"}($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb) AS append_v1
+               )
+               SELECT append_v1, pg_current_xact_id()::text AS transaction_id
+               FROM appended`,
               [
                 input.producerService,
                 input.namespace,
@@ -119,12 +128,21 @@ export class PostgresEventStore {
               },
             );
           }
-          // append_v1 is a single autocommitted statement. Taking the span at
-          // query completion bounds the PostgreSQL COMMIT-to-consumer path,
-          // without including response serialization or gRPC scheduling.
-          const commitEpochMs = Date.now();
-          const value = result.rows[0]?.append_v1;
+          const row = result.rows[0];
+          if (row === undefined) throw new Error("append returned no result");
+          const value = row?.append_v1;
           if (value === undefined) throw new Error("append returned no result");
+          const commitTimestamp = await client.query<{
+            commit_epoch_ms: string | null;
+          }>(
+            "SELECT (extract(epoch FROM pg_xact_commit_timestamp($1::xid)) * 1000)::text AS commit_epoch_ms",
+            [row.transaction_id],
+          );
+          const commitEpochMs = Number(
+            commitTimestamp.rows[0]?.commit_epoch_ms,
+          );
+          if (!Number.isFinite(commitEpochMs))
+            throw new Error("PostgreSQL commit timestamp is unavailable");
           // Keep this observation out of the durable idempotent result: a
           // retried request must retain its byte-equivalent response.
           Object.defineProperty(value, "commitEpochMs", {
@@ -155,14 +173,30 @@ export class PostgresEventStore {
     return this.withSession(async (client) => {
       const result = await client.query<{
         append_recovery_barrier: AppendResult;
+        transaction_id: string;
       }>(
-        "SELECT event_store.append_recovery_barrier($1,$2,$3,$4) AS append_recovery_barrier",
+        `WITH appended AS (
+           SELECT event_store.append_recovery_barrier($1,$2,$3,$4) AS append_recovery_barrier
+         )
+         SELECT append_recovery_barrier, pg_current_xact_id()::text AS transaction_id
+         FROM appended`,
         [replayId, partition, aggregateId, requestId],
       );
-      const commitEpochMs = Date.now();
-      const value = result.rows[0]?.append_recovery_barrier;
+      const row = result.rows[0];
+      if (row === undefined)
+        throw new Error("recovery barrier append returned no result");
+      const value = row?.append_recovery_barrier;
       if (value === undefined)
         throw new Error("recovery barrier append returned no result");
+      const commitTimestamp = await client.query<{
+        commit_epoch_ms: string | null;
+      }>(
+        "SELECT (extract(epoch FROM pg_xact_commit_timestamp($1::xid)) * 1000)::text AS commit_epoch_ms",
+        [row.transaction_id],
+      );
+      const commitEpochMs = Number(commitTimestamp.rows[0]?.commit_epoch_ms);
+      if (!Number.isFinite(commitEpochMs))
+        throw new Error("PostgreSQL commit timestamp is unavailable");
       Object.defineProperty(value, "commitEpochMs", {
         value: commitEpochMs,
         enumerable: false,
