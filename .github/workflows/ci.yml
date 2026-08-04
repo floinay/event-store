@@ -33,6 +33,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24.18.0, cache: npm }
       - run: npm ci
+      - run: npm run build
       - run: RUN_STRESS=true npx vitest run tests/sql-contract/concurrency.test.ts
 
   latency:
@@ -44,4 +45,5 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24.18.0, cache: npm }
       - run: npm ci
+      - run: npm run build
       - run: RUN_LATENCY=true npx vitest run tests/performance/cdc-latency.test.ts
