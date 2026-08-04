@@ -9,6 +9,7 @@
     { "path": "packages/projection-runtime" },
     { "path": "apps/event-store-service" },
     { "path": "tools/migrate" },
+    { "path": "tools/bootstrap" },
     { "path": "tools/reconcile" },
     { "path": "tools/pitr-verify" },
     { "path": "tools/replay" },

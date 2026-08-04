@@ -20,6 +20,7 @@
     "lint": "eslint .",
     "format": "prettier --check .",
     "migrate": "npm run build && node tools/migrate/dist/index.js",
+    "bootstrap": "npm run build && node tools/bootstrap/dist/index.js",
     "reconcile": "npm run build && node tools/reconcile/dist/index.js",
     "pitr:verify": "npm run build && node tools/pitr-verify/dist/index.js",
     "replay:connector": "npm run build && node tools/replay/dist/index.js",
