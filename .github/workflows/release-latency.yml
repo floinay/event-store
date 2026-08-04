@@ -20,6 +20,7 @@ jobs:
       - run: >-
           RUN_INTEGRATION=true npx vitest run --no-file-parallelism
           tests/integration/migrate-role-passwords.test.ts
+          tests/integration/migrate-upgrade.test.ts
           --reporter=json --outputFile=release-migration.json
       - uses: actions/upload-artifact@v4
         if: always()

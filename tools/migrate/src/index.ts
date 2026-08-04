@@ -9,6 +9,11 @@ interface AppliedMigration {
   checksum: string;
 }
 
+export interface MigrateOptions {
+  /** Apply through this migration, for upgrade testing. */
+  upToMigration?: string;
+}
+
 const loginRoles = new Set([
   "event_store_migrator",
   "event_store_app",
@@ -39,6 +44,7 @@ function rolePasswordsFromEnvironment(): ReadonlyMap<string, string> {
 export async function migrate(
   databaseUrl: string,
   includeClusterMigration = false,
+  options: MigrateOptions = {},
 ): Promise<void> {
   const migrationsDir = join(
     fileURLToPath(new URL("../../../migrations/", import.meta.url)),
@@ -46,6 +52,16 @@ export async function migrate(
   const files = (await readdir(migrationsDir))
     .filter((file) => /^\d{3}_.+\.sql$/.test(file))
     .sort();
+  const databaseFiles = files.filter((file) => file !== "001_roles.sql");
+  if (
+    options.upToMigration !== undefined &&
+    !databaseFiles.includes(options.upToMigration)
+  )
+    throw new Error(`unknown database migration: ${options.upToMigration}`);
+  const applicableFiles =
+    options.upToMigration === undefined
+      ? databaseFiles
+      : databaseFiles.filter((file) => file <= options.upToMigration!);
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
@@ -78,7 +94,7 @@ export async function migrate(
         "ALTER DATABASE event_store OWNER TO event_store_owner",
       );
     await client.query("SET ROLE event_store_owner");
-    const first = files.find((file) => file !== "001_roles.sql");
+    const first = applicableFiles[0];
     if (first === undefined) throw new Error("no database migrations found");
     const migrationTable = await client.query<{ table_name: string | null }>(
       "SELECT to_regclass('event_store.schema_migrations') AS table_name",
@@ -101,7 +117,7 @@ export async function migrate(
     const checksums = new Map(
       applied.rows.map((row) => [row.version, row.checksum]),
     );
-    for (const file of files.filter((entry) => entry !== "001_roles.sql")) {
+    for (const file of applicableFiles) {
       const sql = await readFile(join(migrationsDir, file), "utf8");
       const checksum = createHash("sha256").update(sql).digest("hex");
       const existing = checksums.get(file);

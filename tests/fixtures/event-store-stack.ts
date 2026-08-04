@@ -154,6 +154,8 @@ EOF
       toxiproxy?: boolean;
       connectKafkaProxy?: boolean;
       productionResources?: boolean;
+      /** Start only PostgreSQL; the caller applies migrations explicitly. */
+      migrate?: boolean;
       walBudgetBytes?: bigint;
       /**
        * Test-only physical WAL retention ceiling. It can exceed the admission
@@ -216,6 +218,11 @@ EOF
         Wait.forLogMessage(/database system is ready to accept connections/, 2),
       )
       .start();
+    if (options.migrate === false) {
+      if (options.cdc === true)
+        throw new TypeError("CDC requires a migrated Event Store database");
+      return;
+    }
     await migrate(this.databaseUrl, true);
     if (options.cdc !== true) {
       // Storage-only tests intentionally do not start CDC. Production remains
