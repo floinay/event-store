@@ -1,0 +1,55 @@
+name: Reliability matrix
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+    - cron: "0 1 * * 0"
+  workflow_dispatch:
+
+jobs:
+  nightly-recovery:
+    if: github.event.schedule != '0 1 * * 0' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24.18.0, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - run: >-
+          RUN_INTEGRATION=true npx vitest run --no-file-parallelism
+          tests/integration/slot-loss-recovery.test.ts
+          tests/integration/pitr-recovery.test.ts
+          tests/integration/connect-network-recovery.test.ts
+          tests/integration/connect-kafka-recovery.test.ts
+          --reporter=json --outputFile=reliability-nightly.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reliability-nightly
+          path: reliability-nightly.json
+          retention-days: 35
+
+  weekly-soak:
+    if: github.event.schedule == '0 1 * * 0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 400
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24.18.0, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - run: >-
+          RUN_LATENCY=true RUN_RELEASE_LATENCY=true
+          LATENCY_DURATION_MS=21600000 LATENCY_SAMPLE_COUNT=100
+          LATENCY_CONCURRENCY=16
+          npx vitest run tests/performance/cdc-latency.test.ts
+          --reporter=json --outputFile=cdc-weekly-soak.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cdc-weekly-soak
+          path: cdc-weekly-soak.json
+          retention-days: 35
