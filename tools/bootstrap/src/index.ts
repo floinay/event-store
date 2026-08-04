@@ -164,9 +164,6 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
         if ((error as { code?: string }).code !== "42710") throw error;
       }
     }
-    await database.query("SELECT event_store.enable_append_admission($1)", [
-      options.walBudgetBytes.toString(),
-    ]);
   } finally {
     await database.end();
   }
@@ -205,6 +202,11 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   await readinessDatabase.connect();
   try {
     await verifyCdcReadiness(readinessDatabase, cdcSlotName);
+    // Append admission is the final rollout step: the logical slot and the
+    // selected connector have already proved that they are active.
+    await readinessDatabase.query("SELECT event_store.enable_append_admission($1)", [
+      options.walBudgetBytes.toString(),
+    ]);
   } finally {
     await readinessDatabase.end();
   }
