@@ -306,6 +306,115 @@ suite("projection consumer Kafka crash recovery", () => {
     }
   }, 90_000);
 
+  it("rewinds a Kafka group offset ahead of the durable PostgreSQL checkpoint", async () => {
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [stack.kafkaBroker()] },
+    });
+    const topic = `consumer-offset-ahead-${uuidv7()}`;
+    const groupId = `consumer-offset-ahead-${uuidv7()}`;
+    const generationId = uuidv7();
+    const identity = { name: `offset-ahead-${generationId}`, generationId };
+    const admin = kafka.admin();
+    const producer = kafka.producer({
+      kafkaJS: { idempotent: true, acks: -1 },
+    });
+    let runnerConsumer: KafkaJS.Consumer | undefined;
+    let seedConsumer: KafkaJS.Consumer | undefined;
+    try {
+      await admin.connect();
+      await admin.createTopics({
+        topics: [{ topic, numPartitions: 1, replicationFactor: 1 }],
+      });
+      await producer.connect();
+      const events = Array.from({ length: 2 }, (_, index) => {
+        const event = {
+          eventId: uuidv7(),
+          namespace: "orders",
+          aggregateType: "Order",
+          aggregateId: uuidv7(),
+          streamRevision: "1",
+          eventNumber: String(index + 1),
+          eventName: "order.created",
+          schemaVersion: 1,
+          occurredAt: "2026-08-04T10:12:18.120Z",
+          recordedAt: "2026-08-04T10:12:18.120Z",
+          producerService: "offset-ahead-test",
+          context: {
+            requestId: uuidv7(),
+            correlationId: uuidv7(),
+            causationId: null,
+            actor: { kind: "service" as const, subjectRef: "offset-ahead" },
+          },
+          payload: { index },
+        };
+        const value = canonicalJson(event);
+        return {
+          event,
+          message: {
+            key: partitionKey(event),
+            value,
+            headers: {
+              id: event.eventId,
+              type: event.eventName,
+              envelopeHash: createHash("sha256").update(value).digest("hex"),
+              namespace: event.namespace,
+              aggregateType: event.aggregateType,
+              streamRevision: event.streamRevision,
+            },
+          },
+        };
+      });
+      await producer.send({
+        topic,
+        messages: events.map(({ message }) => message),
+      });
+      await pool.query(
+        "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ($1,$2,'building',clock_timestamp())",
+        [identity.name, identity.generationId],
+      );
+      // Simulate an old process that committed Kafka farther than the DB
+      // transaction/checkpoint it was supposed to commit with.
+      seedConsumer = kafka.consumer({
+        kafkaJS: { groupId, autoCommit: false, fromBeginning: true },
+      });
+      await seedConsumer.connect();
+      await seedConsumer.subscribe({ topics: [topic], replace: true });
+      await seedConsumer.run({ eachBatch: async () => undefined });
+      await eventually(async () => seedConsumer!.assignment().length === 1);
+      await seedConsumer.commitOffsets([{ topic, partition: 0, offset: "2" }]);
+      await seedConsumer.disconnect();
+      seedConsumer = undefined;
+      const runner = new KafkaProjectionRunner(
+        { brokers: [stack.kafkaBroker()], groupId, topic },
+        new ProjectionTransactionRunner(pool, identity, (event) => event),
+        async (client, event) => {
+          await client.query(
+            "INSERT INTO consumer_kafka_crash.events(projection_name,event_id) VALUES ($1,$2)",
+            [identity.name, event.eventId],
+          );
+        },
+        new ProjectionCheckpointStore(pool, identity),
+        new ProjectionFailureReporter(pool, identity),
+      );
+      runnerConsumer = await runner.start();
+      await eventually(async () => {
+        const result = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM consumer_kafka_crash.events WHERE projection_name=$1",
+          [identity.name],
+        );
+        return result.rows[0]?.count === events.length;
+      });
+      await expect(
+        new ProjectionCheckpointStore(pool, identity).nextOffset(topic, 0),
+      ).resolves.toBe(2n);
+    } finally {
+      await runnerConsumer?.disconnect().catch(() => undefined);
+      await seedConsumer?.disconnect().catch(() => undefined);
+      await producer.disconnect().catch(() => undefined);
+      await admin.disconnect().catch(() => undefined);
+    }
+  }, 90_000);
+
   it("aborts an open projection transaction during consumer-group rebalance", async () => {
     const kafka = new KafkaJS.Kafka({
       kafkaJS: { brokers: [stack.kafkaBroker()] },
