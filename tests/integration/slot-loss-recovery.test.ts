@@ -162,7 +162,7 @@ suite("logical slot-loss recovery", () => {
       ),
     );
     await pool.query(
-      "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4,$5,$6,$7)",
+      "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4,$5,$6)",
       [
         recoverySlot,
         recoveryConnector,
@@ -170,7 +170,6 @@ suite("logical slot-loss recovery", () => {
         generationId,
         recoveryId,
         consumerGroupId,
-        "0",
       ],
     );
     await pool.query("SELECT event_store.activate_recovery_cdc_slot($1,$2,$3)", [
