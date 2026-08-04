@@ -30,6 +30,7 @@ export interface ProjectionIdentity {
  */
 export type ProjectionCrashPoint =
   | "after_kafka_poll"
+  | "before_database_connection"
   | "after_inbox_insert"
   | "after_read_model_mutation"
   | "after_checkpoint_update"
@@ -39,6 +40,17 @@ export type ProjectionCrashPoint =
 
 export interface ProjectionCrashBarrier {
   hit(point: ProjectionCrashPoint): Promise<void> | void;
+}
+
+const poolsWithTerminalErrorHandler = new WeakSet<Pool>();
+
+function absorbPoolTerminalError(pool: Pool): void {
+  if (poolsWithTerminalErrorHandler.has(pool)) return;
+  poolsWithTerminalErrorHandler.add(pool);
+  // A proxy/network split can terminate an idle socket after its client was
+  // released. node-postgres emits that on Pool; without this listener Node
+  // treats it as an uncaught exception before the next operation can retry.
+  pool.on("error", () => undefined);
 }
 export type ProjectionHandler = (
   client: PoolClient,
@@ -130,7 +142,9 @@ export class ProjectionFailureReporter {
   constructor(
     private readonly pool: Pool,
     private readonly identity: ProjectionIdentity,
-  ) {}
+  ) {
+    absorbPoolTerminalError(pool);
+  }
 
   async record(
     record: ConsumedRecord,
@@ -287,6 +301,7 @@ export class ProjectionTransactionRunner {
       );
     if (record.key !== partitionKey(event))
       throw new ProjectionIntegrityError("Kafka key does not match envelope");
+    await this.crashBarrier?.hit("before_database_connection");
     const client = await this.pool.connect();
     // PostgreSQL emits a terminal socket error after transaction_timeout has
     // already rejected the in-flight query. Keep a listener until disposal so

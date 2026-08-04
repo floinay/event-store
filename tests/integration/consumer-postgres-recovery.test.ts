@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { Pool } from "pg";
 import { uuidv7 } from "@event-store/contracts";
@@ -55,7 +55,15 @@ suite("projection consumer PostgreSQL recovery", () => {
     upcasters.setCurrentVersion("order.created", 1);
     const schemas = new ProjectionPayloadSchemas();
     schemas.register("order.created", 1, z.object({}).passthrough());
-    const runner = () =>
+    let databaseConnectionReached!: () => void;
+    const databaseConnection = new Promise<void>((resolve) => {
+      databaseConnectionReached = resolve;
+    });
+    let releaseDatabaseConnection!: () => void;
+    const databaseConnectionGate = new Promise<void>((resolve) => {
+      releaseDatabaseConnection = resolve;
+    });
+    const runner = (holdBeforeDatabaseConnection = false) =>
       new KafkaProjectionRunner(
         {
           brokers: [stack.kafkaBroker()],
@@ -66,6 +74,16 @@ suite("projection consumer PostgreSQL recovery", () => {
           consumerPool,
           identity,
           createProjectionEventTransformer(upcasters, schemas),
+          holdBeforeDatabaseConnection
+            ? {
+                hit: async (point) => {
+                  if (point === "before_database_connection") {
+                    databaseConnectionReached();
+                    await databaseConnectionGate;
+                  }
+                },
+              }
+            : undefined,
         ),
         async (client, event) => {
           await client.query(
@@ -76,8 +94,7 @@ suite("projection consumer PostgreSQL recovery", () => {
         new ProjectionCheckpointStore(consumerPool, identity),
         new ProjectionFailureReporter(consumerPool, identity),
       );
-    const first = await runner().start();
-    await stack.setConsumerPostgresEnabled(false);
+    const first = await runner(true).start();
     const requestId = uuidv7();
     try {
       await new PostgresEventStore(pool).append({
@@ -102,6 +119,15 @@ suite("projection consumer PostgreSQL recovery", () => {
           },
         ],
       });
+      await databaseConnection;
+      await stack.setConsumerPostgresEnabled(false);
+      releaseDatabaseConnection();
+      const probe = new Pool({ connectionString: stack.consumerDatabaseUrl });
+      try {
+        await expect(probe.query("SELECT 1")).rejects.toThrow();
+      } finally {
+        await probe.end().catch(() => undefined);
+      }
     } finally {
       await first.disconnect().catch(() => undefined);
       await stack.setConsumerPostgresEnabled(true);
