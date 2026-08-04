@@ -2,9 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { join } from "node:path";
 import { uuidv7 } from "@event-store/contracts";
-import { startServer } from "../../apps/event-store-service/dist/index.js";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
 
 const suite = process.env.RUN_LATENCY === "true" ? describe : describe.skip;
@@ -32,7 +33,7 @@ function percentile(samples: readonly number[], quantile: number): number {
 
 suite("PostgreSQL commit to Kafka consumer latency", () => {
   const stack = new EventStoreStack();
-  let server: grpc.Server;
+  let serviceProcess: ChildProcess;
   let client: AppendClient;
   beforeAll(async () => {
     await stack.start({ cdc: true });
@@ -41,7 +42,11 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     process.env.CDC_WAL_BUDGET_BYTES = String(8 * 1024 ** 3);
     process.env.GRPC_LISTEN_ADDRESS = "127.0.0.1:50062";
     process.env.GRPC_ALLOW_INSECURE = "true";
-    server = await startServer();
+    serviceProcess = spawn(
+      process.execPath,
+      [join(process.cwd(), "apps/event-store-service/dist/index.js")],
+      { env: process.env, stdio: "ignore" },
+    );
     const definition = protoLoader.loadSync(
       join(process.cwd(), "packages/contracts/proto/event_store.proto"),
       { keepCase: true, longs: String, enums: String, defaults: false },
@@ -57,10 +62,18 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       "127.0.0.1:50062",
       grpc.credentials.createInsecure(),
     ) as AppendClient;
+    await new Promise<void>((resolve, reject) =>
+      client.waitForReady(Date.now() + 30_000, (error) =>
+        error === undefined || error === null ? resolve() : reject(error),
+      ),
+    );
   }, 180_000);
   afterAll(async () => {
     client?.close();
-    await new Promise<void>((resolve) => server?.tryShutdown(() => resolve()));
+    if (serviceProcess?.exitCode === null) {
+      serviceProcess.kill("SIGTERM");
+      await once(serviceProcess, "exit");
+    }
     await stack.stop();
   }, 60_000);
 
@@ -109,7 +122,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       void consumer.run({
         eachMessage: async ({ message }) => {
           // Take this span before JSON parsing, schema validation or a handler.
-          const receivedAt = performance.now();
+          const receivedAt = Date.now();
           const eventId = headerText(message.headers?.id);
           if (eventId === undefined) return;
           observed.set(eventId, receivedAt);
@@ -138,7 +151,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
             aggregateId,
             String(index++),
           );
-          committed.set(appendResult.eventId, appendResult.commitMonotonicMs);
+          committed.set(appendResult.eventId, appendResult.commitEpochMs);
         }),
       );
     } while (committed.size < sampleCount || performance.now() < deadline);
@@ -189,9 +202,9 @@ function append(
   requestId: string,
   aggregateId: string,
   index: string,
-): Promise<{ eventId: string; commitMonotonicMs: number }> {
+): Promise<{ eventId: string; commitEpochMs: number }> {
   return new Promise((resolve, reject) => {
-    let commitMonotonicMs: number | undefined;
+    let commitEpochMs: number | undefined;
     const call = client.AppendToStream(
       {
         request_id: requestId,
@@ -221,7 +234,7 @@ function append(
         }
         const eventId =
           response?.events?.[0]?.event_id ?? response?.events?.[0]?.eventId;
-        if (eventId === undefined || commitMonotonicMs === undefined) {
+        if (eventId === undefined || commitEpochMs === undefined) {
           reject(
             new Error(
               `append acknowledgement omitted event ID or commit span: ${JSON.stringify(response)}`,
@@ -229,13 +242,13 @@ function append(
           );
           return;
         }
-        resolve({ eventId, commitMonotonicMs });
+        resolve({ eventId, commitEpochMs });
       },
     );
     call.once("metadata", (metadata) => {
-      const value = metadata.get("x-event-store-commit-monotonic-ms")[0];
+      const value = metadata.get("x-event-store-commit-epoch-ms")[0];
       const parsed = Number(value);
-      if (Number.isFinite(parsed)) commitMonotonicMs = parsed;
+      if (Number.isFinite(parsed)) commitEpochMs = parsed;
     });
   });
 }

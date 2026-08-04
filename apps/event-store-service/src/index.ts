@@ -434,8 +434,8 @@ export async function startServer(): Promise<grpc.Server> {
         // completed; emit it before the gRPC acknowledgement is scheduled.
         const commitMetadata = new grpc.Metadata();
         commitMetadata.set(
-          "x-event-store-commit-monotonic-ms",
-          result.commitMonotonicMs.toFixed(6),
+          "x-event-store-commit-epoch-ms",
+          result.commitEpochMs.toString(),
         );
         call.sendMetadata(commitMetadata);
         callback(null, {

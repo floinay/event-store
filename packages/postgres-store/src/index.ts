@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { performance } from "node:perf_hooks";
 import type { Pool, PoolClient } from "pg";
 import {
   EventContextSchema,
@@ -32,8 +31,8 @@ export interface AppendResult {
   previousRevision: string;
   currentRevision: string;
   recordedAt: string;
-  /** Monotonic timestamp sampled immediately after PostgreSQL completed append. */
-  commitMonotonicMs: number;
+  /** UTC timestamp sampled immediately after PostgreSQL completed append. */
+  commitEpochMs: number;
   events: readonly {
     eventId: string;
     streamRevision: string;
@@ -123,10 +122,10 @@ export class PostgresEventStore {
           // append_v1 is a single autocommitted statement. Taking the span at
           // query completion bounds the PostgreSQL COMMIT-to-consumer path,
           // without including response serialization or gRPC scheduling.
-          const commitMonotonicMs = performance.now();
+          const commitEpochMs = Date.now();
           const value = result.rows[0]?.append_v1;
           if (value === undefined) throw new Error("append returned no result");
-          return { ...value, commitMonotonicMs };
+          return { ...value, commitEpochMs };
         });
       } catch (error) {
         const delay = appendRetryDelaysMs[attempt];
@@ -154,11 +153,11 @@ export class PostgresEventStore {
         "SELECT event_store.append_recovery_barrier($1,$2,$3,$4) AS append_recovery_barrier",
         [replayId, partition, aggregateId, requestId],
       );
-      const commitMonotonicMs = performance.now();
+      const commitEpochMs = Date.now();
       const value = result.rows[0]?.append_recovery_barrier;
       if (value === undefined)
         throw new Error("recovery barrier append returned no result");
-      return { ...value, commitMonotonicMs };
+      return { ...value, commitEpochMs };
     });
   }
 
