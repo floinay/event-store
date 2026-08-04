@@ -159,15 +159,36 @@ suite("append SQL contract", () => {
       await client.query("RESET ROLE").catch(() => undefined);
       client.release();
     }
-    const event = await pool.query<{ event_id: string }>(
-      "SELECT event_id FROM event_store.events LIMIT 1",
+    const seeded = await store.append(
+      appendInput(id(), id(), [{ orderRef: "immutable" }]),
     );
+    const eventId = seeded.events[0]?.eventId;
+    if (eventId === undefined)
+      throw new Error("append omitted immutable event");
     await expect(
       pool.query(
         "UPDATE event_store.events SET event_name='order.changed' WHERE event_id=$1",
-        [event.rows[0]?.event_id],
+        [eventId],
       ),
     ).rejects.toMatchObject({ code: "55000" });
+    await expect(
+      pool.query("DELETE FROM event_store.events WHERE event_id=$1", [eventId]),
+    ).rejects.toMatchObject({ code: "55000" });
+  });
+
+  it("rejects no-stream and exact-revision writes against an existing stream", async () => {
+    const aggregateId = id();
+    await store.append(appendInput(aggregateId, id(), [{ orderRef: "first" }]));
+    await expect(
+      store.append(appendInput(aggregateId, id(), [{ orderRef: "again" }])),
+    ).rejects.toMatchObject({ code: "40001" });
+    const stale = appendInput(aggregateId, id(), [{ orderRef: "stale" }]);
+    await expect(
+      store.append({
+        ...stale,
+        expectedRevision: { kind: "exact", revision: 0n },
+      }),
+    ).rejects.toMatchObject({ code: "40001" });
   });
 
   it("rejects a direct SQL append with an invalid canonical context", async () => {
