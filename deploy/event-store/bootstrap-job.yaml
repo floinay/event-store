@@ -9,7 +9,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: bootstrap
-          image: event-store-bootstrap:latest
+          image: event-store-bootstrap:1.0.0
           env:
             - name: MIGRATION_DATABASE_URL
               valueFrom:

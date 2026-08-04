@@ -9,7 +9,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: cluster-roles
-          image: event-store-bootstrap:latest
+          image: event-store-bootstrap:1.0.0
           command: ["node", "tools/migrate/dist/index.js"]
           env:
             - name: DATABASE_URL
