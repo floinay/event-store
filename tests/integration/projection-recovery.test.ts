@@ -185,8 +185,8 @@ suite("projection recovery", () => {
       topics: ["event-store.projection-dlq.v1"],
       replace: true,
     });
-    let resolveDlq!: () => void;
-    const published = new Promise<void>((resolve, reject) => {
+    let resolveDlq!: (key: string) => void;
+    const published = new Promise<string>((resolve, reject) => {
       resolveDlq = resolve;
       setTimeout(
         () => reject(new Error("poison event was not published to DLQ")),
@@ -198,7 +198,9 @@ suite("projection recovery", () => {
         const value = JSON.parse(message.value?.toString() ?? "{}") as {
           envelope?: { eventId?: string };
         };
-        if (value.envelope?.eventId === eventId) resolveDlq();
+        if (value.envelope?.eventId === eventId) {
+          resolveDlq(message.key?.toString() ?? "");
+        }
       },
     });
     const upcasters = new UpcasterRegistry();
@@ -229,7 +231,11 @@ suite("projection recovery", () => {
     );
     const consumer = await runner.start();
     try {
-      await published;
+      await expect(published).resolves.toMatch(
+        new RegExp(
+          `^${projectionName}\\|${generationId}\\|event-store\\.events\\.v1\\|\\d+\\|\\d+$`,
+        ),
+      );
       await expect(
         pool.query<{ attempt_count: number; dlq_published_at: string | null }>(
           "SELECT attempt_count,dlq_published_at FROM projection_runtime.failures WHERE projection_name=$1 AND generation_id=$2 AND event_id=$3",

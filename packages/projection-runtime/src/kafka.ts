@@ -296,9 +296,12 @@ export class KafkaProjectionRunner {
               topic: this.dlqTopic,
               messages: [
                 {
-                  key: `${this.config.groupId}|${topic}|${partition}|${message.offset}`,
+                  key: `${this.transactionRunner.projectionIdentity.name}|${this.transactionRunner.projectionIdentity.generationId}|${topic}|${partition}|${message.offset}`,
                   value: JSON.stringify({
-                    projection: this.config.groupId,
+                    projectionName:
+                      this.transactionRunner.projectionIdentity.name,
+                    generationId:
+                      this.transactionRunner.projectionIdentity.generationId,
                     topic,
                     partition,
                     offset: message.offset,

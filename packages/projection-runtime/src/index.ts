@@ -264,6 +264,10 @@ export class ProjectionTransactionRunner {
     private readonly crashBarrier?: ProjectionCrashBarrier,
   ) {}
 
+  get projectionIdentity(): ProjectionIdentity {
+    return this.identity;
+  }
+
   async process(
     record: ConsumedRecord,
     apply: ProjectionHandler,
