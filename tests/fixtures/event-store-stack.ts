@@ -49,6 +49,7 @@ export class EventStoreStack {
       .withEntrypoint(["bash"])
       .withCommand(["-ceu", "while true; do sleep 1; done"])
       .withNetwork(this.#network)
+      .withNetworkAliases("pitr-restored")
       .withExposedPorts(5432)
       .withWaitStrategy(Wait.forSuccessfulCommand("true"))
       .start();
@@ -342,6 +343,7 @@ EOF
   async createSnapshotRecoveryConnector(
     recoveryId: string,
     slotName: string,
+    databaseHostname = "postgres",
   ): Promise<string> {
     if (!/^[a-z0-9-]{1,63}$/.test(recoveryId))
       throw new Error("recoveryId must be lowercase alphanumeric/hyphen");
@@ -354,7 +356,7 @@ EOF
       body: JSON.stringify({
         "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
         "tasks.max": "1",
-        "database.hostname": "postgres",
+        "database.hostname": databaseHostname,
         "database.port": "5432",
         "database.user": "event_store_cdc",
         "database.password": "cdc",

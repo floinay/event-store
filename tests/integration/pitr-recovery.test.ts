@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { uuidv7 } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
+import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { Pool } from "pg";
 
 const suite = process.env.RUN_INTEGRATION === "true" ? describe : describe.skip;
@@ -12,7 +13,7 @@ suite("PITR recovery", () => {
   let restored: { databaseUrl: string; stop: () => Promise<void> } | undefined;
 
   beforeAll(async () => {
-    await stack.start();
+    await stack.start({ cdc: true });
     source = await stack.pool();
   }, 180_000);
   afterAll(async () => {
@@ -55,6 +56,53 @@ suite("PITR recovery", () => {
           [slot],
         ),
       ).resolves.toMatchObject({ rows: [{ failover: true }] });
+      const restoredEventIds = await restoredPool.query<{ event_id: string }>(
+        "SELECT event_id FROM event_store.events ORDER BY event_number",
+      );
+      const kafka = new KafkaJS.Kafka({
+        kafkaJS: { brokers: [stack.kafkaBroker()] },
+      });
+      const consumer = kafka.consumer({
+        kafkaJS: {
+          groupId: `pitr-replay-${uuidv7()}`,
+          autoCommit: false,
+          fromBeginning: true,
+        },
+      });
+      const deliveries = new Map<string, number>();
+      await consumer.connect();
+      await consumer.subscribe({ topics: ["event-store.events.v1"], replace: true });
+      const replayed = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("restored CDC snapshot did not replay target events")),
+          60_000,
+        );
+        void consumer.run({
+          eachMessage: async ({ message }) => {
+            const event = JSON.parse(message.value?.toString() ?? "{}") as {
+              eventId?: string;
+            };
+            if (event.eventId === undefined) return;
+            deliveries.set(event.eventId, (deliveries.get(event.eventId) ?? 0) + 1);
+            if (
+              restoredEventIds.rows.every(
+                ({ event_id }) => (deliveries.get(event_id) ?? 0) >= 2,
+              )
+            ) {
+              clearTimeout(timeout);
+              resolve();
+            }
+          },
+        });
+      });
+      await stack.createSnapshotRecoveryConnector(
+        `pitr-${uuidv7().slice(0, 8)}`,
+        slot,
+        "pitr-restored",
+      );
+      await replayed;
+      await consumer.disconnect();
+      expect(restoredEventIds.rows).toHaveLength(1);
     } finally {
       await restoredPool.end();
     }
