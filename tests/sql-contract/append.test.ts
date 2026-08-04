@@ -652,6 +652,7 @@ suite("append SQL contract", () => {
     await pool.query(
       "SELECT event_store.close_cdc_delivery_health_for_restart()",
     );
+    await pool.query("SELECT event_store.set_cdc_delivery_health(false)");
     await expect(
       pool.query<{ cdc_reconciliation_required: boolean }>(
         "SELECT cdc_reconciliation_required FROM event_store.runtime_config WHERE singleton",
@@ -659,6 +660,24 @@ suite("append SQL contract", () => {
     ).resolves.toMatchObject({ rows: [{ cdc_reconciliation_required: true }] });
     await pool.query(
       "UPDATE event_store.runtime_config SET cdc_reconciliation_required=false WHERE singleton",
+    );
+  });
+
+  it("turns a failed first check after restart into a reconciliation incident", async () => {
+    await pool.query(
+      "UPDATE event_store.runtime_config SET cdc_delivery_healthy=true,cdc_reconciliation_required=false WHERE singleton",
+    );
+    await pool.query(
+      "SELECT event_store.close_cdc_delivery_health_for_restart()",
+    );
+    await pool.query("SELECT event_store.set_cdc_delivery_health(false)");
+    await expect(
+      pool.query<{ cdc_reconciliation_required: boolean }>(
+        "SELECT cdc_reconciliation_required FROM event_store.runtime_config WHERE singleton",
+      ),
+    ).resolves.toMatchObject({ rows: [{ cdc_reconciliation_required: true }] });
+    await pool.query(
+      "UPDATE event_store.runtime_config SET cdc_reconciliation_required=false,cdc_delivery_startup_pending=false WHERE singleton",
     );
   });
 
