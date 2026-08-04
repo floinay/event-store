@@ -169,6 +169,13 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
       );
     }
     if (!slot.rows[0]?.exists) {
+      const events = await database.query<{ exists: boolean }>(
+        "SELECT EXISTS(SELECT 1 FROM event_store.events) AS exists",
+      );
+      if (events.rows[0]?.exists)
+        throw new Error(
+          `live CDC slot ${cdcSlotName} is missing after events exist; refusing to create a new cursor without recovery`,
+        );
       try {
         await database.query(
           "SELECT pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
