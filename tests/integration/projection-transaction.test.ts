@@ -27,6 +27,83 @@ suite("projection crash boundary", () => {
     await stack.stop();
   }, 60_000);
 
+  it("checkpoints the CDC probe without requiring a projection schema or handler", async () => {
+    const generationId = uuidv7();
+    const eventId = uuidv7();
+    const requestId = uuidv7();
+    const event = {
+      eventId,
+      namespace: "system",
+      aggregateType: "CdcLatencyProbe",
+      aggregateId: uuidv7(),
+      streamRevision: "1",
+      eventNumber: "1",
+      eventName: "system.cdc.latency.probe",
+      schemaVersion: 1,
+      occurredAt: "2026-08-04T10:12:18.120Z",
+      recordedAt: "2026-08-04T10:12:18.120Z",
+      producerService: "event-store-latency-probe",
+      context: {
+        requestId,
+        correlationId: uuidv7(),
+        causationId: null,
+        actor: {
+          kind: "service" as const,
+          subjectRef: "event-store-latency-probe",
+        },
+      },
+      payload: {},
+    };
+    await pool.query(
+      "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ('probe-control',$1,'building',clock_timestamp())",
+      [generationId],
+    );
+    const value = canonicalJson(event);
+    const record = {
+      topic: "event-store.events.v1",
+      partition: 0,
+      offset: 0n,
+      key: `system|CdcLatencyProbe|${event.aggregateId}`,
+      value,
+      headers: {
+        id: event.eventId,
+        type: event.eventName,
+        envelopeHash: createHash("sha256").update(value).digest("hex"),
+        namespace: event.namespace,
+        aggregateType: event.aggregateType,
+        streamRevision: event.streamRevision,
+      },
+    };
+    const runner = new ProjectionTransactionRunner(
+      pool,
+      { name: "probe-control", generationId },
+      () => {
+        throw new Error("CDC probe must not require a projection schema");
+      },
+    );
+    let handlerCalls = 0;
+    await expect(
+      runner.process(record, async () => {
+        handlerCalls += 1;
+      }),
+    ).resolves.toBe("processed");
+    expect(handlerCalls).toBe(0);
+    await expect(
+      pool.query(
+        "SELECT next_offset::text, last_event_id::text FROM projection_runtime.checkpoints WHERE projection_name='probe-control' AND generation_id=$1",
+        [generationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ next_offset: "1", last_event_id: eventId }],
+    });
+    await expect(
+      pool.query(
+        "SELECT count(*)::int AS count FROM projection_runtime.inbox WHERE projection_name='probe-control' AND generation_id=$1",
+        [generationId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+  });
+
   it("rolls back inbox, model and checkpoint before retrying the same record", async () => {
     const generationId = uuidv7();
     const aggregateId = uuidv7();
