@@ -86,13 +86,13 @@ spec:
           for: 2m
           labels: { severity: page }
           annotations:
-            summary: PostgreSQL commit to read_committed consumer p50 exceeds 50 ms
+            summary: PostgreSQL recorded_at to read_committed consumer p50 exceeds 50 ms
         - alert: EventStoreCommitToConsumerP95High
           expr: histogram_quantile(0.95, sum(rate(event_store_cdc_commit_to_consumer_latency_seconds_bucket[5m])) by (le)) > 0.1
           for: 2m
           labels: { severity: page }
           annotations:
-            summary: PostgreSQL commit to read_committed consumer p95 exceeds 100 ms
+            summary: PostgreSQL recorded_at to read_committed consumer p95 exceeds 100 ms
         - alert: EventStoreCommitToConsumerProbeUnavailable
           expr: min(event_store_cdc_latency_probe_up) < 1 or absent(event_store_cdc_latency_probe_up)
           for: 30s

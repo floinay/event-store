@@ -104,11 +104,13 @@ describe("PostgresEventStore append retries", () => {
     expect(fake.appendCalls()).toBe(1);
   });
 
-  it("records an Event Store commit span without PostgreSQL commit timestamps", async () => {
+  it("uses PostgreSQL recordedAt as a conservative CDC latency anchor", async () => {
     const fake = poolThatFails(new Error("append failed"), 0);
     const result = await new PostgresEventStore(fake.pool).append(input());
     expect(result.currentRevision).toBe("1");
-    expect(result.commitEpochMs).toEqual(expect.any(Number));
+    expect(result.commitEpochMs).toBe(
+      Date.parse("2026-08-04T10:12:18.120Z"),
+    );
     expect(fake.appendCalls()).toBe(1);
   });
 });

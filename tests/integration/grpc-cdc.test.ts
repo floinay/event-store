@@ -166,7 +166,7 @@ suite("gRPC to CDC", () => {
     expect(metrics).toContain("event_store_db_pool_waiting");
   });
 
-  it("measures PostgreSQL commit to pre-handler consumer receipt", async () => {
+  it("measures PostgreSQL recorded_at to pre-handler consumer receipt", async () => {
     const previous = {
       grpc: process.env.GRPC_LISTEN_ADDRESS,
       http: process.env.HTTP_LISTEN_ADDRESS,

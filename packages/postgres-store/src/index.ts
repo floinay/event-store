@@ -31,7 +31,11 @@ export interface AppendResult {
   previousRevision: string;
   currentRevision: string;
   recordedAt: string;
-  /** Event Store span timestamp sampled immediately after the SQL commit returns. */
+  /**
+   * PostgreSQL's canonical `recorded_at` epoch. It is sampled inside the
+   * append transaction, before commit, so CDC latency measured from it is a
+   * conservative bound rather than a client-response measurement.
+   */
   commitEpochMs?: number;
   events: readonly {
     eventId: string;
@@ -66,6 +70,13 @@ function isRetriableAppendError(error: unknown): boolean {
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function conservativeDatabaseEpochMs(value: AppendResult): number {
+  const epochMs = Date.parse(value.recordedAt);
+  if (!Number.isFinite(epochMs))
+    throw new Error("append returned an invalid PostgreSQL recordedAt timestamp");
+  return epochMs;
 }
 
 export class PostgresEventStore {
@@ -123,10 +134,6 @@ export class PostgresEventStore {
               },
             );
           }
-          // The simple SQL statement has committed before node-postgres
-          // resolves this await. This is the Event Store's commit span; it
-          // intentionally does not depend on PostgreSQL commit timestamps.
-          const commitEpochMs = Date.now();
           const row = result.rows[0];
           if (row === undefined) throw new Error("append returned no result");
           const value = row?.append_v1;
@@ -134,7 +141,7 @@ export class PostgresEventStore {
           // Keep this observation out of the durable idempotent result: a
           // retried request must retain its byte-equivalent response.
           Object.defineProperty(value, "commitEpochMs", {
-            value: commitEpochMs,
+            value: conservativeDatabaseEpochMs(value),
             enumerable: false,
           });
           return value;
@@ -165,7 +172,6 @@ export class PostgresEventStore {
         "SELECT event_store.append_recovery_barrier($1,$2,$3,$4) AS append_recovery_barrier",
         [replayId, partition, aggregateId, requestId],
       );
-      const commitEpochMs = Date.now();
       const row = result.rows[0];
       if (row === undefined)
         throw new Error("recovery barrier append returned no result");
@@ -173,7 +179,7 @@ export class PostgresEventStore {
       if (value === undefined)
         throw new Error("recovery barrier append returned no result");
       Object.defineProperty(value, "commitEpochMs", {
-        value: commitEpochMs,
+        value: conservativeDatabaseEpochMs(value),
         enumerable: false,
       });
       return value;

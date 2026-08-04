@@ -24,6 +24,10 @@ timestamp; `time.precision.mode=connect` is incompatible with EventRouter 3.6.
 `event_envelope_kafka` holds the canonical JSON text derived in the same append
 transaction. With `StringConverter` and `expand.json.payload=false`, Debezium
 publishes those canonical JSON bytes without reserializing the JSONB envelope.
+The CDC latency probe starts at PostgreSQL `recorded_at`, which is produced
+inside the append transaction before commit. Its result is therefore a
+conservative upper bound for commit-to-consumer latency; production clock sync
+is required for the database and probe pod.
 
 Before a planned promotion, run
 `SELECT event_store.assert_configured_failover_candidate()` on the selected
