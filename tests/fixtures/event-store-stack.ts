@@ -171,7 +171,16 @@ EOF
       )
       .start();
     await migrate(this.databaseUrl, true);
-    if (options.cdc !== true) return;
+    if (options.cdc !== true) {
+      // Storage-only tests intentionally do not start CDC. Production remains
+      // fail-closed until bootstrap has proved the slot and connector ready.
+      const database = new Pool({ connectionString: this.databaseUrl });
+      await database.query(
+        "UPDATE event_store.runtime_config SET append_admission_enabled=false WHERE singleton",
+      );
+      await database.end();
+      return;
+    }
     if (options.toxiproxy === true) {
       this.#toxiproxy = await new ToxiProxyContainer(
         "ghcr.io/shopify/toxiproxy:2.12.0",
