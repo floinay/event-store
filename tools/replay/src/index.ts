@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
-import type { Pool } from "pg";
+import { Pool } from "pg";
 import { partitionKey, uuidv7 } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
 
@@ -21,6 +21,16 @@ export interface ReplayBarrier {
   partition: number;
   aggregateId: string;
   eventId: string;
+}
+
+export interface ReplayStartOptions {
+  identity: ReplayIdentity;
+  coordinatorDatabaseUrl: string;
+  appendDatabaseUrl: string;
+  connectorUrl: string;
+  brokers: string[];
+  replicationFactor?: number;
+  connectorDatabase: Parameters<typeof replayConnectorConfig>[1];
 }
 
 const kafkaPartitionCount = 24;
@@ -382,6 +392,39 @@ export class ReplayCoordinator {
   }
 }
 
+/** Starts the durable half of a rebuild; activation remains deliberately separate. */
+export async function startReplay(
+  options: ReplayStartOptions,
+): Promise<ReplayBarrier[]> {
+  const coordinatorPool = new Pool({
+    connectionString: options.coordinatorDatabaseUrl,
+  });
+  const appendPool = new Pool({ connectionString: options.appendDatabaseUrl });
+  try {
+    const coordinator = new ReplayCoordinator(
+      coordinatorPool,
+      options.connectorUrl,
+      options.brokers,
+      options.replicationFactor,
+    );
+    await coordinator.createGeneration(options.identity);
+    await coordinator.deployConnector(
+      options.identity,
+      replayConnectorConfig(
+        options.identity.replayId,
+        options.connectorDatabase,
+      ),
+    );
+    return await appendReplayBarriers(
+      new PostgresEventStore(appendPool),
+      options.identity.replayId,
+    );
+  } finally {
+    await coordinatorPool.end();
+    await appendPool.end();
+  }
+}
+
 export function replayConnectorConfig(
   replayId: string,
   database: {
@@ -432,22 +475,41 @@ export function replayConnectorConfig(
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const replayId = process.env.REPLAY_ID;
   const raw = process.env.REPLAY_DATABASE_JSON;
-  if (replayId === undefined || raw === undefined)
-    throw new Error("REPLAY_ID and REPLAY_DATABASE_JSON are required");
+  const coordinatorDatabaseUrl = process.env.REPLAY_COORDINATOR_DATABASE_URL;
+  const appendDatabaseUrl = process.env.REPLAY_APPEND_DATABASE_URL;
+  const connectorUrl = process.env.CONNECT_URL;
+  const brokers = process.env.KAFKA_BROKERS?.split(",");
+  const projectionName = process.env.REPLAY_PROJECTION_NAME;
+  const generationId = process.env.REPLAY_GENERATION_ID;
+  if (
+    replayId === undefined ||
+    raw === undefined ||
+    coordinatorDatabaseUrl === undefined ||
+    appendDatabaseUrl === undefined ||
+    connectorUrl === undefined ||
+    brokers === undefined ||
+    projectionName === undefined ||
+    generationId === undefined
+  )
+    throw new Error(
+      "REPLAY_ID, REPLAY_DATABASE_JSON, REPLAY_COORDINATOR_DATABASE_URL, REPLAY_APPEND_DATABASE_URL, CONNECT_URL, KAFKA_BROKERS, REPLAY_PROJECTION_NAME and REPLAY_GENERATION_ID are required",
+    );
+  const barriers = await startReplay({
+    identity: { replayId, projectionName, generationId },
+    coordinatorDatabaseUrl,
+    appendDatabaseUrl,
+    connectorUrl,
+    brokers,
+    connectorDatabase: JSON.parse(raw) as Parameters<
+      typeof replayConnectorConfig
+    >[1],
+  });
   console.log(
     JSON.stringify(
       {
-        name: `event-store-replay-${replayId}`,
-        config: replayConnectorConfig(
-          replayId,
-          JSON.parse(raw) as {
-            hostname: string;
-            port: number;
-            user: string;
-            password: string;
-            dbname: string;
-          },
-        ),
+        replayId,
+        generationId,
+        barriers,
       },
       null,
       2,

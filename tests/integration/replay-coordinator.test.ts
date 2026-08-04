@@ -6,8 +6,8 @@ import {
   ensureReplayTopic,
   kafkaDefaultPartition,
   ReplayCoordinator,
-  replayConnectorConfig,
   replayTopicName,
+  startReplay,
 } from "@event-store/replay";
 import { PostgresEventStore } from "@event-store/postgres-store";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
@@ -96,21 +96,21 @@ suite("replay coordinator", () => {
       [stack.kafkaBroker()],
       1,
     );
-    await coordinator.createGeneration(identity);
-    await coordinator.deployConnector(
+    const barriers = await startReplay({
       identity,
-      replayConnectorConfig(identity.replayId, {
+      coordinatorDatabaseUrl: stack.databaseUrl,
+      appendDatabaseUrl: stack.databaseUrl,
+      connectorUrl: stack.connectUrl,
+      brokers: [stack.kafkaBroker()],
+      replicationFactor: 1,
+      connectorDatabase: {
         hostname: "postgres",
         port: 5432,
         user: "event_store_cdc",
         password: "cdc",
         dbname: "event_store",
-      }),
-    );
-    const barriers = await appendReplayBarriers(
-      new PostgresEventStore(pool),
-      identity.replayId,
-    );
+      },
+    });
     const kafka = new KafkaJS.Kafka({
       kafkaJS: { brokers: [stack.kafkaBroker()] },
     });
