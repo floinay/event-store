@@ -40,6 +40,11 @@ rules:
     labels:
       connector: "$1"
     type: GAUGE
+  - pattern: "debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>Connected"
+    name: event_store_connect_task_connected
+    labels:
+      connector: "$1"
+    type: GAUGE
   - pattern: "debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>NumberOfCommittedTransactions"
     name: event_store_connect_committed_transactions_total
     labels:

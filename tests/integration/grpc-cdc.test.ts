@@ -166,6 +166,54 @@ suite("gRPC to CDC", () => {
     expect(metrics).toContain("event_store_db_pool_waiting");
   });
 
+  it("measures PostgreSQL commit to pre-handler consumer receipt", async () => {
+    const previous = {
+      grpc: process.env.GRPC_LISTEN_ADDRESS,
+      http: process.env.HTTP_LISTEN_ADDRESS,
+      brokers: process.env.KAFKA_BROKERS,
+      probeInterval: process.env.CDC_LATENCY_PROBE_INTERVAL_MS,
+    };
+    process.env.GRPC_LISTEN_ADDRESS = "127.0.0.1:50064";
+    process.env.HTTP_LISTEN_ADDRESS = "127.0.0.1:50164";
+    process.env.KAFKA_BROKERS = stack.kafkaBroker();
+    process.env.CDC_LATENCY_PROBE_INTERVAL_MS = "1000";
+    const probeServer = await startServer();
+    try {
+      const deadline = Date.now() + 30_000;
+      let metrics = "";
+      while (Date.now() < deadline) {
+        metrics = await fetch("http://127.0.0.1:50164/metrics").then((result) =>
+          result.text(),
+        );
+        if (
+          /event_store_cdc_commit_to_consumer_latency_seconds_count [1-9]/.test(
+            metrics,
+          )
+        )
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(metrics).toContain("event_store_cdc_latency_probe_up 1");
+      expect(metrics).toMatch(
+        /event_store_cdc_commit_to_consumer_latency_seconds_count [1-9]/,
+      );
+    } finally {
+      await new Promise<void>((resolve) => probeServer.tryShutdown(resolve));
+      for (const [name, value] of Object.entries(previous)) {
+        const key =
+          name === "grpc"
+            ? "GRPC_LISTEN_ADDRESS"
+            : name === "http"
+              ? "HTTP_LISTEN_ADDRESS"
+              : name === "brokers"
+                ? "KAFKA_BROKERS"
+                : "CDC_LATENCY_PROBE_INTERVAL_MS";
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }, 60_000);
+
   it.each([
     "before_sql",
     "after_postgres_commit",

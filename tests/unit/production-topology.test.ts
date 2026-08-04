@@ -66,6 +66,7 @@ describe("production HA topology", () => {
     expect(runtime).toContain("CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR");
     expect(runtime).toContain("CONNECT_CONSUMER_ISOLATION_LEVEL");
     expect(runtime).toContain("CONNECT_PRODUCER_COMPRESSION_TYPE");
+    expect(runtime).toContain("CDC_LATENCY_PROBE_INTERVAL_MS");
     expect(runtime).toContain("name: connect");
     expect(runtime).toContain('requests: { cpu: "2", memory: 4Gi }');
     expect(preflight).toContain(
@@ -85,6 +86,8 @@ describe("production HA topology", () => {
     expect(monitoring).toContain("EventStoreAppendUnknownOutcome");
     expect(monitoring).toContain("EventStoreConnectSourceDisconnected");
     expect(monitoring).toContain("EventStoreConnectSourceLagP99High");
+    expect(monitoring).toContain("EventStoreCommitToConsumerP95High");
+    expect(monitoring).toContain("EventStoreCommitToConsumerProbeUnavailable");
     for (const alert of [
       "EventStoreLogicalSlotWalWarning",
       "EventStoreLogicalSlotWalHigh",

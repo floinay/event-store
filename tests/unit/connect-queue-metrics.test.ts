@@ -1,8 +1,27 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { connectQueueRatio } from "../../apps/event-store-service/src/index.js";
+import {
+  CommitToConsumerLatencyHistogram,
+  connectQueueRatio,
+} from "../../apps/event-store-service/src/index.js";
 
 describe("Connect queue metrics", () => {
+  it("exports bounded commit-to-consumer histogram buckets", () => {
+    const histogram = new CommitToConsumerLatencyHistogram();
+    histogram.observe(20);
+    histogram.observe(120);
+    const metrics = histogram.prometheus();
+    expect(metrics).toContain(
+      'event_store_cdc_commit_to_consumer_latency_seconds_bucket{le="0.025"} 1',
+    );
+    expect(metrics).toContain(
+      'event_store_cdc_commit_to_consumer_latency_seconds_bucket{le="0.1"} 1',
+    );
+    expect(metrics).toContain(
+      "event_store_cdc_commit_to_consumer_latency_seconds_count 2",
+    );
+  });
+
   it("reads QueueRemainingCapacity and QueueTotalCapacity", () => {
     expect(
       connectQueueRatio(
@@ -48,6 +67,7 @@ describe("Connect queue metrics", () => {
       "event_store_connect_milliseconds_behind_source_p95",
       "event_store_connect_milliseconds_behind_source_p99",
       "event_store_connect_source_connected",
+      "event_store_connect_task_connected",
       "event_store_connect_committed_transactions_total",
     ])
       expect(config).toContain(metric);

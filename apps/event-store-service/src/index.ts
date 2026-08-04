@@ -77,12 +77,137 @@ import { createServer } from "node:http";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { Pool } from "pg";
-import { EventContextSchema, UuidV7 } from "@event-store/contracts";
+import { EventContextSchema, UuidV7, uuidv7 } from "@event-store/contracts";
 import { ZodError } from "zod";
 import {
   PostgresEventStore,
   type ExpectedRevision,
 } from "@event-store/postgres-store";
+
+const cdcLatencyBucketsSeconds = [0.01, 0.025, 0.05, 0.1, 0.2] as const;
+
+/** Prometheus histogram for the commit span to pre-handler consumer span. */
+export class CommitToConsumerLatencyHistogram {
+  private count = 0;
+  private sumSeconds = 0;
+  private readonly bucketCounts = new Map<number, number>(
+    cdcLatencyBucketsSeconds.map((bucket) => [bucket, 0]),
+  );
+
+  observe(milliseconds: number): void {
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) return;
+    this.count += 1;
+    this.sumSeconds += milliseconds / 1_000;
+    for (const bucket of cdcLatencyBucketsSeconds)
+      if (milliseconds / 1_000 <= bucket)
+        this.bucketCounts.set(bucket, (this.bucketCounts.get(bucket) ?? 0) + 1);
+  }
+
+  prometheus(): string {
+    let output =
+      "# TYPE event_store_cdc_commit_to_consumer_latency_seconds histogram\n";
+    for (const bucket of cdcLatencyBucketsSeconds)
+      output += `event_store_cdc_commit_to_consumer_latency_seconds_bucket{le="${bucket}"} ${this.bucketCounts.get(bucket) ?? 0}\n`;
+    output +=
+      `event_store_cdc_commit_to_consumer_latency_seconds_bucket{le="+Inf"} ${this.count}\n` +
+      `event_store_cdc_commit_to_consumer_latency_seconds_sum ${this.sumSeconds}\n` +
+      `event_store_cdc_commit_to_consumer_latency_seconds_count ${this.count}\n`;
+    return output;
+  }
+}
+
+interface CdcLatencyProbe {
+  up: () => boolean;
+  stop: () => Promise<void>;
+}
+
+async function startCdcLatencyProbe(
+  store: PostgresEventStore,
+  brokers: readonly string[],
+  topic: string,
+  intervalMs: number,
+  histogram: CommitToConsumerLatencyHistogram,
+): Promise<CdcLatencyProbe> {
+  if (!Number.isInteger(intervalMs) || intervalMs < 1_000)
+    throw new Error(
+      "CDC_LATENCY_PROBE_INTERVAL_MS must be an integer of at least 1000",
+    );
+  const kafka = new KafkaJS.Kafka({ kafkaJS: { brokers: [...brokers] } });
+  const consumer = kafka.consumer({
+    kafkaJS: {
+      groupId: `event-store-latency-probe-${process.env.HOSTNAME ?? process.pid}`,
+      autoCommit: true,
+      fromBeginning: false,
+      readUncommitted: false,
+      allowAutoTopicCreation: false,
+    },
+  });
+  const pending = new Map<string, number>();
+  let connected = false;
+  await consumer.connect();
+  await consumer.subscribe({ topics: [topic], replace: true });
+  await consumer.run({
+    eachMessage: async ({ message }) => {
+      // The receive span deliberately precedes JSON validation and handlers.
+      const receivedEpochMs = Date.now();
+      const id = message.headers?.id;
+      const eventId = (Array.isArray(id) ? id[0] : id)?.toString();
+      if (eventId === undefined) return;
+      const committedEpochMs = pending.get(eventId);
+      if (committedEpochMs === undefined) return;
+      pending.delete(eventId);
+      histogram.observe(receivedEpochMs - committedEpochMs);
+    },
+  });
+  connected = true;
+  const publish = async (): Promise<void> => {
+    const now = new Date().toISOString();
+    const requestId = uuidv7();
+    const result = await store.append({
+      producerService: "event-store-latency-probe",
+      requestId,
+      namespace: "system",
+      aggregateType: "CdcLatencyProbe",
+      aggregateId: uuidv7(),
+      expectedRevision: { kind: "no_stream" },
+      events: [
+        {
+          eventName: "system.cdc.latency.probe",
+          schemaVersion: 1,
+          occurredAt: now,
+          payload: {},
+        },
+      ],
+      context: {
+        requestId,
+        correlationId: uuidv7(),
+        causationId: null,
+        actor: { kind: "service", subjectRef: "event-store-latency-probe" },
+        trafficClass: "standard",
+      },
+    });
+    const eventId = result.events[0]?.eventId;
+    if (eventId !== undefined && result.commitEpochMs !== undefined)
+      pending.set(eventId, result.commitEpochMs);
+    const cutoff = Date.now() - 300_000;
+    for (const [id, committedAt] of pending)
+      if (committedAt < cutoff) pending.delete(id);
+  };
+  const timer = setInterval(
+    () => void publish().catch(() => undefined),
+    intervalMs,
+  );
+  timer.unref();
+  void publish().catch(() => undefined);
+  return {
+    up: () => connected,
+    stop: async () => {
+      connected = false;
+      clearInterval(timer);
+      await consumer.disconnect().catch(() => undefined);
+    },
+  };
+}
 
 type JsonObject = Record<string, unknown>;
 interface AppendRequest extends JsonObject {
@@ -325,6 +450,13 @@ export async function startServer(
   const kafkaBrokers = process.env.KAFKA_BROKERS?.split(",");
   const kafkaTopic = process.env.KAFKA_LIVE_TOPIC ?? "event-store.events.v1";
   const kafkaMinIsr = Number(process.env.KAFKA_LIVE_MIN_ISR ?? "2");
+  const latencyProbeIntervalText = process.env.CDC_LATENCY_PROBE_INTERVAL_MS;
+  const latencyHistogram = new CommitToConsumerLatencyHistogram();
+  let latencyProbe: CdcLatencyProbe | undefined;
+  if (latencyProbeIntervalText !== undefined && kafkaBrokers === undefined)
+    throw new Error(
+      "KAFKA_BROKERS is required when CDC latency probe is enabled",
+    );
   const healthAddress = process.env.HTTP_LISTEN_ADDRESS;
   const health =
     healthAddress === undefined
@@ -347,7 +479,11 @@ export async function startServer(
                     `event_store_db_commit_duration_seconds_sum ${metrics.dbCommitDurationSeconds}\n` +
                     `event_store_db_pool_total ${pool.totalCount}\n` +
                     `event_store_db_pool_idle ${pool.idleCount}\n` +
-                    `event_store_db_pool_waiting ${pool.waitingCount}\n`,
+                    `event_store_db_pool_waiting ${pool.waitingCount}\n` +
+                    (latencyProbe === undefined
+                      ? ""
+                      : latencyHistogram.prometheus() +
+                        `event_store_cdc_latency_probe_up ${latencyProbe.up() ? 1 : 0}\n`),
                 );
               return;
             }
@@ -422,6 +558,14 @@ export async function startServer(
       health.once("error", reject).listen(port, host, resolve),
     );
   }
+  if (latencyProbeIntervalText !== undefined)
+    latencyProbe = await startCdcLatencyProbe(
+      store,
+      kafkaBrokers!,
+      kafkaTopic,
+      Number(latencyProbeIntervalText),
+      latencyHistogram,
+    );
   const protoPath =
     process.env.PROTO_PATH ??
     join(process.cwd(), "packages/contracts/proto/event_store.proto");
@@ -659,6 +803,7 @@ export async function startServer(
         await new Promise<void>(
           (resolve) => health?.close(() => resolve()) ?? resolve(),
         );
+        await latencyProbe?.stop();
         await pool.end();
         await criticalPool?.end();
       })().finally(callback);
