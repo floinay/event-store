@@ -75,5 +75,37 @@ suite("reconciliation", () => {
       missingProjectionEvents: "0",
       unknownProjectionEvents: "0",
     });
+    await pool.query(
+      "INSERT INTO projection_runtime.inbox(projection_name,generation_id,event_id,envelope_sha256,topic_name,partition_no,kafka_offset,processed_at) VALUES ($1,$2,$3,$4,'event-store.events.v1',0,1,clock_timestamp())",
+      [projectionName, generationId, uuidv7(), "0".repeat(64)],
+    );
+    await store.append({
+      producerService: "orders-command",
+      namespace: "orders",
+      aggregateType: "Order",
+      aggregateId: uuidv7(),
+      requestId: uuidv7(),
+      expectedRevision: { kind: "no_stream" },
+      context: {
+        requestId: uuidv7(),
+        correlationId: uuidv7(),
+        causationId: null,
+        actor: { kind: "user", subjectRef: "usr_1" },
+      },
+      events: [
+        {
+          eventName: "order.created",
+          schemaVersion: 1,
+          occurredAt: "2026-08-04T10:12:18.120Z",
+          payload: { orderRef: "missing" },
+        },
+      ],
+    });
+    await expect(
+      reconcile(stack.databaseUrl, { projectionName, generationId }),
+    ).resolves.toMatchObject({
+      missingProjectionEvents: "1",
+      unknownProjectionEvents: "1",
+    });
   });
 });
