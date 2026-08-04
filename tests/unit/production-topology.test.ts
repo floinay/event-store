@@ -87,6 +87,12 @@ describe("production HA topology", () => {
       '"predicates.isCanonicalEvents.pattern": "event-store-live\\\\.event_store\\\\.events"',
     );
     expect(monitoring).toContain("kind: ServiceMonitor");
+    expect(runtime).toContain(
+      "kind: Service\nmetadata:\n  name: event-store\n  labels: { app: event-store }",
+    );
+    expect(runtime).toContain(
+      "kind: Service\nmetadata:\n  name: event-store-connect\n  labels: { app: event-store-connect }",
+    );
     expect(monitoring).toContain("kind: PrometheusRule");
     expect(monitoring).toContain("EventStoreAppendUnknownOutcome");
     expect(monitoring).toContain("EventStoreConnectSourceDisconnected");
