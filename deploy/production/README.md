@@ -11,7 +11,7 @@ run CDC bootstrap. The role Job owns the database only after CNPG has created
 
 ```sh
 kubectl apply -k deploy/production
-kubectl wait --for=condition=complete job/event-store-cnpg-fence --timeout=10m
+kubectl wait --for=condition=Ready cluster/event-store-postgres --timeout=10m
 kubectl apply -f deploy/event-store/cluster-roles-job.yaml
 kubectl wait --for=condition=complete job/event-store-cluster-roles --timeout=5m
 kubectl apply -f deploy/event-store/bootstrap-job.yaml
@@ -25,12 +25,9 @@ timestamp; `time.precision.mode=connect` is incompatible with EventRouter 3.6.
 transaction. With `StringConverter` and `expand.json.payload=false`, Debezium
 publishes those canonical JSON bytes without reserializing the JSONB envelope.
 
-CNPG automatic reconciliation is disabled by `event-store-cnpg-fence` before
-bootstrap can enable append traffic. Before a promotion, run
-`SELECT event_store.assert_configured_failover_candidate()` on the selected
-candidate. Only after it succeeds may an operator use `kubectl cnpg promote`
-for that exact instance and remove the reconciliation-loop annotation in the
-same controlled change. Promotion is prohibited unless the slot is present,
-failover-enabled, non-temporary, valid, and `synced=true`. After promotion,
-redirect the primary Service and Connect, verify the slot identity/LSN,
-reconcile event IDs around the promotion window, then reopen append traffic.
+Before promoting a PostgreSQL standby, run
+`SELECT event_store.assert_configured_failover_candidate()` on that
+candidate. Promotion is prohibited unless the slot is present, failover-enabled,
+non-temporary, valid, and `synced=true`. After promotion, redirect the primary
+Service and Connect, verify the slot identity/LSN, reconcile event IDs around
+the promotion window, then reopen append traffic.

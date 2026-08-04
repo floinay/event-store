@@ -7,7 +7,6 @@ resources:
   - runtime.yaml
   - monitoring.yaml
   - projection-failure-prune-cronjob.yaml
-  - failover-fence.yaml
 configMapGenerator:
   - name: event-store-connect-jmx
     files:
