@@ -430,13 +430,12 @@ export async function startServer(): Promise<grpc.Server> {
         const result = await appendStore.append(
           parseAppendRequest(call.request, producerService, trafficClass),
         );
-        // This span is emitted after PostgreSQL completed the append statement,
-        // before gRPC writes the acknowledgement. It is intentionally monotonic:
-        // the latency probe and consumer run on the same measured node.
+        // PostgresEventStore sampled this immediately after its append query
+        // completed; emit it before the gRPC acknowledgement is scheduled.
         const commitMetadata = new grpc.Metadata();
         commitMetadata.set(
           "x-event-store-commit-monotonic-ms",
-          performance.now().toFixed(6),
+          result.commitMonotonicMs.toFixed(6),
         );
         call.sendMetadata(commitMetadata);
         callback(null, {
