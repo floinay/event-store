@@ -1,6 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { uuidv7 } from "@event-store/contracts";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
+import {
+  KafkaProjectionRunner,
+  ProjectionCheckpointStore,
+  ProjectionFailureReporter,
+  ProjectionTransactionRunner,
+  type ProjectionIdentity,
+} from "@event-store/projection-runtime";
 import {
   appendReplayBarriers,
   ensureReplayTopic,
@@ -14,6 +22,61 @@ import { EventStoreStack } from "../fixtures/event-store-stack.js";
 import type { Pool } from "pg";
 
 const suite = process.env.RUN_INTEGRATION === "true" ? describe : describe.skip;
+
+async function eventually(check: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("condition did not become true within 60 seconds");
+}
+
+async function projectionChecksum(
+  pool: Pool,
+  generationId: string,
+): Promise<string> {
+  const rows = await pool.query<{ event_id: string; payload: string }>(
+    `SELECT event_id::text,payload::text FROM replay_projection.events
+     WHERE generation_id=$1 ORDER BY event_id`,
+    [generationId],
+  );
+  return createHash("sha256")
+    .update(rows.rows.map((row) => `${row.event_id}:${row.payload}`).join("\n"))
+    .digest("hex");
+}
+
+async function fullFoldChecksum(pool: Pool): Promise<string> {
+  const rows = await pool.query<{ event_id: string; payload: string }>(
+    `SELECT event_id::text,event_envelope->>'payload' AS payload
+     FROM event_store.events ORDER BY event_id`,
+  );
+  return createHash("sha256")
+    .update(rows.rows.map((row) => `${row.event_id}:${row.payload}`).join("\n"))
+    .digest("hex");
+}
+
+function projectionRunner(
+  pool: Pool,
+  identity: ProjectionIdentity,
+  topic: string,
+  groupId: string,
+  broker: string,
+): KafkaProjectionRunner {
+  return new KafkaProjectionRunner(
+    { brokers: [broker], groupId, topic },
+    new ProjectionTransactionRunner(pool, identity, (event) => event),
+    async (client, event) => {
+      await client.query(
+        `INSERT INTO replay_projection.events(generation_id,event_id,payload)
+         VALUES ($1,$2,$3::jsonb) ON CONFLICT DO NOTHING`,
+        [identity.generationId, event.eventId, JSON.stringify(event.payload)],
+      );
+    },
+    new ProjectionCheckpointStore(pool, identity),
+    new ProjectionFailureReporter(pool, identity),
+  );
+}
 
 suite("replay coordinator", () => {
   const stack = new EventStoreStack();
@@ -106,6 +169,21 @@ suite("replay coordinator", () => {
       1,
     );
     await coordinator.createGeneration(identity);
+    const replayProjectionIdentity: ProjectionIdentity = {
+      name: identity.projectionName,
+      generationId: identity.generationId,
+    };
+    await pool.query(
+      "CREATE SCHEMA replay_projection; CREATE TABLE replay_projection.events(generation_id uuid NOT NULL,event_id uuid NOT NULL,payload jsonb NOT NULL,PRIMARY KEY(generation_id,event_id))",
+    );
+    await ensureReplayTopic([stack.kafkaBroker()], identity.replayId, 1);
+    const replayProjection = await projectionRunner(
+      pool,
+      replayProjectionIdentity,
+      replayTopicName(identity.replayId),
+      `replay-projection-${uuidv7()}`,
+      stack.kafkaBroker(),
+    ).start();
     await coordinator.deployConnector(
       identity,
       replayConnectorConfig(identity.replayId, {
@@ -127,75 +205,97 @@ suite("replay coordinator", () => {
         fromBeginning: true,
       },
     });
-    await consumer.connect();
-    await consumer.subscribe({
-      topics: [replayTopicName(identity.replayId)],
-      replace: true,
-    });
-    const barriers = await appendReplayBarriers(
-      new PostgresEventStore(pool),
-      identity.replayId,
-    );
-    const barrierByEventId = new Map(
-      barriers.map((barrier) => [barrier.eventId, barrier]),
-    );
-    const received = new Set<string>();
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error("timed out waiting for replay barriers")),
-        60_000,
-      );
-      let quiet: ReturnType<typeof setTimeout> | undefined;
-      void consumer.run({
-        eachMessage: async ({ message, partition }) => {
-          const event = JSON.parse(message.value?.toString() ?? "{}") as {
-            eventId?: string;
-          };
-          const barrier =
-            event.eventId === undefined
-              ? undefined
-              : barrierByEventId.get(event.eventId);
-          if (barrier !== undefined && !received.has(barrier.eventId)) {
-            expect(partition).toBe(barrier.partition);
-            await coordinator.recordBarrier(identity, {
-              topic: replayTopicName(identity.replayId),
-              partition,
-              offset: message.offset,
-              value: message.value ?? Buffer.alloc(0),
-            });
-            received.add(barrier.eventId);
-          }
-          await consumer.commitOffsets([
-            {
-              topic: replayTopicName(identity.replayId),
-              partition,
-              offset: (BigInt(message.offset) + 1n).toString(),
-            },
-          ]);
-          if (received.size === barriers.length) {
-            if (quiet !== undefined) clearTimeout(quiet);
-            quiet = setTimeout(() => {
-              clearTimeout(timeout);
-              resolve();
-            }, 1_000);
-          }
-        },
+    try {
+      await consumer.connect();
+      await consumer.subscribe({
+        topics: [replayTopicName(identity.replayId)],
+        replace: true,
       });
-    });
-    await consumer.disconnect();
-    expect(
-      (
-        await pool.query<{ count: number }>(
-          "SELECT count(*)::int AS count FROM projection_runtime.replay_barriers WHERE projection_name=$1 AND generation_id=$2",
-          [identity.projectionName, identity.generationId],
-        )
-      ).rows[0]?.count,
-    ).toBe(24);
-    await coordinator.activate(identity, {
-      kafkaLag: async () => 0n,
-      consumerGroupId,
-      checksums: async () => ({ expected: "same", actual: "same" }),
-    });
-    await coordinator.teardown(identity);
+      const barriers = await appendReplayBarriers(
+        new PostgresEventStore(pool),
+        identity.replayId,
+      );
+      const barrierByEventId = new Map(
+        barriers.map((barrier) => [barrier.eventId, barrier]),
+      );
+      const received = new Set<string>();
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("timed out waiting for replay barriers")),
+          60_000,
+        );
+        let quiet: ReturnType<typeof setTimeout> | undefined;
+        void consumer.run({
+          eachMessage: async ({ message, partition }) => {
+            const event = JSON.parse(message.value?.toString() ?? "{}") as {
+              eventId?: string;
+            };
+            const barrier =
+              event.eventId === undefined
+                ? undefined
+                : barrierByEventId.get(event.eventId);
+            if (barrier !== undefined && !received.has(barrier.eventId)) {
+              expect(partition).toBe(barrier.partition);
+              await coordinator.recordBarrier(identity, {
+                topic: replayTopicName(identity.replayId),
+                partition,
+                offset: message.offset,
+                value: message.value ?? Buffer.alloc(0),
+              });
+              received.add(barrier.eventId);
+            }
+            await consumer.commitOffsets([
+              {
+                topic: replayTopicName(identity.replayId),
+                partition,
+                offset: (BigInt(message.offset) + 1n).toString(),
+              },
+            ]);
+            if (received.size === barriers.length) {
+              if (quiet !== undefined) clearTimeout(quiet);
+              quiet = setTimeout(() => {
+                clearTimeout(timeout);
+                resolve();
+              }, 1_000);
+            }
+          },
+        });
+      });
+      await consumer.disconnect();
+      expect(
+        (
+          await pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM projection_runtime.replay_barriers WHERE projection_name=$1 AND generation_id=$2",
+            [identity.projectionName, identity.generationId],
+          )
+        ).rows[0]?.count,
+      ).toBe(24);
+      const expectedEvents = await pool.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM event_store.events",
+      );
+      await eventually(async () => {
+        const replay = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM replay_projection.events WHERE generation_id=$1",
+          [identity.generationId],
+        );
+        return (
+          expectedEvents.rows[0]?.count !== undefined &&
+          expectedEvents.rows[0]?.count > 0 &&
+          expectedEvents.rows[0]?.count === replay.rows[0]?.count
+        );
+      });
+      await coordinator.activate(identity, {
+        kafkaLag: async () => 0n,
+        consumerGroupId,
+        checksums: async () => ({
+          expected: await fullFoldChecksum(pool),
+          actual: await projectionChecksum(pool, identity.generationId),
+        }),
+      });
+    } finally {
+      await consumer.disconnect().catch(() => undefined);
+      await replayProjection.disconnect().catch(() => undefined);
+      await coordinator.teardown(identity).catch(() => undefined);
+    }
   }, 120_000);
 });
