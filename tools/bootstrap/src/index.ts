@@ -62,6 +62,20 @@ async function verifyTopics(
       throw new Error(
         `Kafka topic ${expected.name} has ${topic.partitions.length} partitions; expected ${expected.partitions}`,
       );
+    for (const partition of topic.partitions) {
+      if (partition.replicas.length !== expected.replicationFactor)
+        throw new Error(
+          `Kafka topic ${expected.name}/${partition.partitionId} has RF=${partition.replicas.length}; expected ${expected.replicationFactor}`,
+        );
+      const minInSyncReplicas = Number(expected.configs["min.insync.replicas"]);
+      if (
+        Number.isInteger(minInSyncReplicas) &&
+        partition.isr.length < minInSyncReplicas
+      )
+        throw new Error(
+          `Kafka topic ${expected.name}/${partition.partitionId} has ISR=${partition.isr.length}; requires ${minInSyncReplicas}`,
+        );
+    }
   }
 }
 
