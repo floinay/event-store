@@ -201,8 +201,9 @@ suite("append SQL contract", () => {
   });
 
   it("rejects direct SQL PII fields before the event is stored", async () => {
-    await expect(
-      pool.query(
+    for (const key of ["email", "customer_email", "customerEmail", "token"])
+      await expect(
+        pool.query(
         "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
         [
           "orders-command",
@@ -217,7 +218,7 @@ suite("append SQL contract", () => {
               eventName: "order.created",
               schemaVersion: 1,
               occurredAt: "2026-08-04T10:12:18.120Z",
-              payload: { email: "person@example.com" },
+              payload: { [key]: "person@example.com" },
             },
           ]),
           JSON.stringify({
@@ -225,8 +226,8 @@ suite("append SQL contract", () => {
             actor: { kind: "user", subjectRef: "usr_1" },
           }),
         ],
-      ),
-    ).rejects.toMatchObject({ code: "22023" });
+        ),
+      ).rejects.toMatchObject({ code: "22023" });
   });
 
   it("rejects direct SQL numbers that cannot preserve the consumer hash", async () => {

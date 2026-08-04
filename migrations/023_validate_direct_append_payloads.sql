@@ -8,7 +8,10 @@ AS $$
   SELECT CASE jsonb_typeof($1)
     WHEN 'object' THEN EXISTS (
       SELECT 1 FROM jsonb_each($1) AS entries(key, value)
-      WHERE key ~* '^(name|firstname|lastname|email|phone|address|token|password|credential|cardnumber|pan|cvv)$'
+      WHERE (
+               key !~* '^(eventName|schemaVersion|occurredAt|requestId|correlationId|causationId|aggregateId|aggregateType|subjectRef)$'
+           AND key ~* '(^|[_-])(name|first[_-]?name|last[_-]?name|email|e[_-]?mail|phone|telephone|address|token|password|credential|secret|card([_-]?number)?|pan|cvv|ssn|social[_-]?security|date[_-]?of[_-]?birth|dob)$|(email|phone|address|token|password|credential|secret|cardnumber|pan|cvv|ssn|dob)$'
+            )
          OR event_store.contains_direct_pii(value)
     )
     WHEN 'array' THEN EXISTS (
