@@ -175,7 +175,9 @@ suite("projection consumer Kafka crash recovery", () => {
       try {
         await producer.send({
           topic,
-          messages: events.map((event) => {
+          // Recovery may deliver a canonical Kafka event more than once. The
+          // inbox must suppress the duplicate before the projection effect.
+          messages: [...events, ...events].map((event) => {
             const value = canonicalJson(event);
             return {
               key: partitionKey(event),
@@ -195,17 +197,25 @@ suite("projection consumer Kafka crash recovery", () => {
         await consumer.disconnect().catch(() => undefined);
         consumer = await makeRunner().start();
         await eventually(async () => {
-          const result = await pool.query<{ count: number }>(
-            "SELECT count(*)::int AS count FROM consumer_kafka_crash.events WHERE projection_name=$1",
-            [projectionName],
+          const result = await pool.query<{
+            effects: number;
+            inbox: number;
+          }>(
+            `SELECT
+               (SELECT count(*)::int FROM consumer_kafka_crash.events WHERE projection_name=$1) AS effects,
+               (SELECT count(*)::int FROM projection_runtime.inbox WHERE projection_name=$1 AND generation_id=$2) AS inbox`,
+            [projectionName, generationId],
           );
-          return result.rows[0]?.count === eventCount;
+          return (
+            result.rows[0]?.effects === eventCount &&
+            result.rows[0]?.inbox === eventCount
+          );
         });
         const checkpoint = await new ProjectionCheckpointStore(
           pool,
           identity,
         ).nextOffset(topic, 0);
-        expect(checkpoint).toBe(BigInt(eventCount));
+        expect(checkpoint).toBe(BigInt(eventCount * 2));
       } finally {
         await producer.disconnect().catch(() => undefined);
         await consumer.disconnect().catch(() => undefined);
