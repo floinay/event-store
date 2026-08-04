@@ -37,10 +37,21 @@ export async function migrate(
     await client.query("SET ROLE event_store_owner");
     const first = files.find((file) => file !== "001_roles.sql");
     if (first === undefined) throw new Error("no database migrations found");
-    await client.query(await readFile(join(migrationsDir, first), "utf8"));
-    await client.query(
-      "CREATE TABLE IF NOT EXISTS event_store.schema_migrations (version text PRIMARY KEY, checksum char(64) NOT NULL, applied_at timestamptz NOT NULL DEFAULT clock_timestamp())",
+    const migrationTable = await client.query<{ table_name: string | null }>(
+      "SELECT to_regclass('event_store.schema_migrations') AS table_name",
     );
+    if (migrationTable.rows[0]?.table_name === null) {
+      const sql = await readFile(join(migrationsDir, first), "utf8");
+      const checksum = createHash("sha256").update(sql).digest("hex");
+      await client.query(sql);
+      await client.query(
+        "CREATE TABLE event_store.schema_migrations (version text PRIMARY KEY, checksum char(64) NOT NULL, applied_at timestamptz NOT NULL DEFAULT clock_timestamp())",
+      );
+      await client.query(
+        "INSERT INTO event_store.schema_migrations(version, checksum) VALUES ($1, $2)",
+        [first, checksum],
+      );
+    }
     const applied = await client.query<AppliedMigration>(
       "SELECT version, checksum FROM event_store.schema_migrations",
     );
