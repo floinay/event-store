@@ -18,7 +18,6 @@
     "schema.include.list": "event_store",
     "table.include.list": "event_store.events",
     "snapshot.mode": "no_data",
-    "time.precision.mode": "connect",
     "lsn.flush.mode": "connector",
     "offset.mismatch.strategy": "trust_offset",
     "exactly.once.support": "required",

@@ -17,7 +17,6 @@ describe("replay connector", () => {
       "transforms.outbox.table.field.event.type": "event_name",
       "transforms.outbox.table.field.event.payload": "event_envelope",
       "transforms.outbox.table.field.event.timestamp": "recorded_at_kafka",
-      "time.precision.mode": "connect",
       "transforms.outbox.table.expand.json.payload": "false",
       "transforms.outbox.route.topic.replacement":
         "event-store.replay.aug-2026.v1",
@@ -54,6 +53,6 @@ describe("live Connect worker", () => {
     expect(
       connector.config["transforms.outbox.table.field.event.timestamp"],
     ).toBe("recorded_at_kafka");
-    expect(connector.config["time.precision.mode"]).toBe("connect");
+    expect(connector.config["time.precision.mode"]).toBeUndefined();
   });
 });

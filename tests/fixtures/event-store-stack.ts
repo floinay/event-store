@@ -374,7 +374,6 @@ EOF
           "schema.include.list": "event_store",
           "table.include.list": "event_store.events",
           "snapshot.mode": "no_data",
-          "time.precision.mode": "connect",
           "poll.interval.ms": "5",
           "max.batch.size": "2048",
           "max.queue.size": "8192",

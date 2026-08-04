@@ -18,8 +18,9 @@ kubectl apply -f deploy/event-store/bootstrap-job.yaml
 ```
 
 `recorded_at` is the authoritative UTC event time. `recorded_at_kafka` is a
-derived UTC `timestamp without time zone` used only by Debezium's EventRouter:
-with `time.precision.mode=connect`, it supplies the Kafka record timestamp.
+derived UTC `timestamp without time zone` used only by Debezium's EventRouter.
+The default adaptive Debezium timestamp mapping supplies the Kafka record
+timestamp; `time.precision.mode=connect` is incompatible with EventRouter 3.6.
 The payload uses `StringConverter` with `expand.json.payload=false`, preserving
 the canonical JSON bytes rather than reserializing the envelope.
 

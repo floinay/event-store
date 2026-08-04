@@ -1,6 +1,7 @@
 -- Debezium EventRouter accepts a Connect Timestamp logical schema. The
 -- authoritative recorded_at remains the canonical UTC timestamptz; this
--- technical UTC timestamp is converted by Debezium with time.precision.mode=connect.
+-- technical UTC timestamp is emitted by Debezium's default adaptive mode as a
+-- logical MicroTimestamp, which EventRouter converts to a Kafka timestamp.
 ALTER TABLE event_store.events
   ADD COLUMN recorded_at_kafka timestamp without time zone;
 
