@@ -529,7 +529,10 @@ EOF
           "slot.failover": "true",
           "schema.include.list": "event_store",
           "table.include.list": "event_store.events",
-          "snapshot.mode": "initial",
+          // The recovery slot is deliberately pre-created so it can be
+          // failover-ready. `initial` may skip a snapshot for such a slot;
+          // recovery must replay the durable event store before streaming.
+          "snapshot.mode": "always",
           "poll.interval.ms": "5",
           "max.batch.size": "2048",
           "max.queue.size": "8192",

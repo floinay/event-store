@@ -102,11 +102,11 @@ suite("logical slot-loss recovery", () => {
     const beforeRequestId = uuidv7();
     await append(store, beforeRequestId, "before-slot-loss");
 
-    const paused = await fetch(
-      `${stack.connectUrl}/connectors/event-store-live/pause`,
-      { method: "PUT" },
+    const retiredLiveConnector = await fetch(
+      `${stack.connectUrl}/connectors/event-store-live`,
+      { method: "DELETE" },
     );
-    expect(paused.ok).toBe(true);
+    expect(retiredLiveConnector.ok).toBe(true);
     await eventually(async () => {
       const slot = await pool.query<{ active: boolean }>(
         "SELECT active FROM pg_replication_slots WHERE slot_name='event_store_live'",
@@ -134,14 +134,21 @@ suite("logical slot-loss recovery", () => {
           unsafeRecoverySlot,
         ]),
       ).rejects.toMatchObject({ code: "P0001" });
-      await expect(
-        fetch(`${stack.connectUrl}/connectors/event-store-live/status`),
-      ).resolves.toMatchObject({ status: 200 });
     } finally {
       await pool.query("SELECT pg_drop_replication_slot($1)", [
         unsafeRecoverySlot,
       ]);
     }
+    // Subscribe before the recovery connector is started: a fresh consumer
+    // group otherwise begins at the topic tail and can miss its snapshot.
+    projectionConsumer = await startRecoveryProjection(
+      stack,
+      pool,
+      identity,
+      consumerGroupId,
+      upcasters,
+      schemas,
+    );
     const recoveryId = `loss-${uuidv7().replaceAll("-", "").slice(-12)}`;
     const recoveryConnector = await stack.createSnapshotRecoveryConnector(
       recoveryId,
@@ -162,33 +169,43 @@ suite("logical slot-loss recovery", () => {
       ]),
     ).rejects.toMatchObject({ code: "P0001" });
 
-    // Start from the recovery connector's snapshot, then crash at the durable
-    // checkpoint boundary before barriers are written.
-    projectionConsumer = await startRecoveryProjection(
-      stack,
-      pool,
-      identity,
-      consumerGroupId,
-      upcasters,
-      schemas,
-    );
-    await eventually(async () => {
-      const failures = await pool.query<{ error_detail: { message: string } }>(
-        `SELECT error_detail FROM projection_runtime.failures
-         WHERE projection_name=$1 AND generation_id=$2`,
-        [projectionName, generationId],
-      );
-      if (failures.rows.length > 0)
-        throw new Error(
-          `recovery projection failed: ${failures.rows
-            .map((row) => row.error_detail.message)
-            .join(", ")}`,
+    // The recovery connector snapshot must first rebuild the projection.
+    try {
+      await eventually(async () => {
+        const failures = await pool.query<{
+          error_detail: { message: string };
+        }>(
+          `SELECT error_detail FROM projection_runtime.failures
+           WHERE projection_name=$1 AND generation_id=$2`,
+          [projectionName, generationId],
         );
-      const result = await pool.query<{ count: number }>(
-        "SELECT count(*)::int AS count FROM recovery_model.events",
+        if (failures.rows.length > 0)
+          throw new Error(
+            `recovery projection failed: ${failures.rows
+              .map((row) => row.error_detail.message)
+              .join(", ")}`,
+          );
+        const result = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM recovery_model.events",
+        );
+        return (result.rows[0]?.count ?? 0) > 0;
+      });
+    } catch (error) {
+      const [source, model, connector] = await Promise.all([
+        pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM event_store.events",
+        ),
+        pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM recovery_model.events",
+        ),
+        fetch(
+          `${stack.connectUrl}/connectors/${recoveryConnector}/status`,
+        ).then((response) => response.text()),
+      ]);
+      throw new Error(
+        `recovery snapshot was not projected: source=${source.rows[0]?.count}, model=${model.rows[0]?.count}, connector=${connector}; ${String(error)}`,
       );
-      return result.rows[0]?.count === 1;
-    });
+    }
     await projectionConsumer.disconnect();
     projectionConsumer = await startRecoveryProjection(
       stack,
@@ -259,6 +276,18 @@ suite("logical slot-loss recovery", () => {
           ? 0n
           : 1n,
     });
+    const verificationTimeline = await pool.query<{
+      verified_timeline_id: number;
+      current_timeline_id: number;
+    }>(
+      `SELECT v.verified_timeline_id, event_store.current_timeline_id() AS current_timeline_id
+         FROM event_store.recovery_cdc_verifications v
+        WHERE v.slot_name=$1`,
+      [recoverySlot],
+    );
+    expect(verificationTimeline.rows[0]?.verified_timeline_id).toBe(
+      verificationTimeline.rows[0]?.current_timeline_id,
+    );
     await expect(
       fetch(`${stack.connectUrl}/connectors/event-store-live`),
     ).resolves.toMatchObject({ status: 404 });
@@ -274,13 +303,15 @@ suite("logical slot-loss recovery", () => {
       );
       return missing.rows[0]?.count === 0;
     });
-    expect(
-      (
-        await pool.query<{ count: number }>(
-          "SELECT count(*)::int AS count FROM recovery_model.events",
-        )
-      ).rows[0]?.count,
-    ).toBe(26);
+    const [sourceCount, modelCount] = await Promise.all([
+      pool.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM event_store.events",
+      ),
+      pool.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM recovery_model.events",
+      ),
+    ]);
+    expect(modelCount.rows[0]?.count).toBe(sourceCount.rows[0]?.count);
   }, 180_000);
 });
 

@@ -572,6 +572,20 @@ export class RecoveryCutoverCoordinator {
       this.assertConnectorDelivery(slotName, connectorName),
       this.assertConsumerGroup(verification),
     ]);
+    // Persist a complete event-id/barrier proof before destructive retirement.
+    // The activation transaction repeats it, and SQL accepts it only on the
+    // current PostgreSQL promotion timeline.
+    await this.pool.query(
+      "SELECT event_store.verify_recovery_cdc_cutover($1,$2,$3,$4,$5,$6)",
+      [
+        slotName,
+        connectorName,
+        verification.projectionName,
+        verification.generationId,
+        verification.replayId,
+        verification.consumerGroupId,
+      ],
+    );
     await this.retirePreviousDelivery(
       oldSlotName,
       oldConnectorName,
