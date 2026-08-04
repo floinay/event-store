@@ -362,6 +362,32 @@ suite("append SQL contract", () => {
       ),
     ).rejects.toMatchObject({ code: "P0001" });
   });
+
+  it("rejects append admission for a non-failover CDC slot", async () => {
+    const original = await pool.query<{ cdc_slot_name: string }>(
+      "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
+    );
+    const slotName = "event_store_nonfailover_test";
+    await pool.query(
+      "SELECT pg_create_logical_replication_slot($1, 'pgoutput')",
+      [slotName],
+    );
+    try {
+      await pool.query(
+        "UPDATE event_store.runtime_config SET cdc_slot_name=$1 WHERE singleton",
+        [slotName],
+      );
+      await expect(
+        pool.query("SELECT event_store.assert_append_cdc_ready(8589934592)"),
+      ).rejects.toMatchObject({ code: "P0001" });
+    } finally {
+      await pool.query(
+        "UPDATE event_store.runtime_config SET cdc_slot_name=$1 WHERE singleton",
+        [original.rows[0]?.cdc_slot_name ?? "event_store_live"],
+      );
+      await pool.query("SELECT pg_drop_replication_slot($1)", [slotName]);
+    }
+  });
 });
 
 function appendInput(
