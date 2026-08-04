@@ -903,6 +903,56 @@ suite("append SQL contract", () => {
     }
   });
 
+  it("makes recovery activation inspect the incident fence under a row lock", async () => {
+    const original = await pool.query<{
+      cdc_reconciliation_required: boolean;
+      cdc_delivery_incident_epoch: string;
+      cdc_reconciled_incident_epoch: string | null;
+    }>(
+      `SELECT cdc_reconciliation_required,cdc_delivery_incident_epoch,
+              cdc_reconciled_incident_epoch
+         FROM event_store.runtime_config WHERE singleton`,
+    );
+    try {
+      await pool.query(
+        `UPDATE event_store.runtime_config
+            SET cdc_reconciliation_required=true,cdc_delivery_incident_epoch=7,
+                cdc_reconciled_incident_epoch=6
+          WHERE singleton`,
+      );
+      await expect(
+        pool.query(
+          "SELECT event_store.activate_recovery_cdc_slot('event_store_recovery_fence_test','event-store-recovery-fence-test',8589934592)",
+        ),
+      ).rejects.toMatchObject({ code: "P0001" });
+    } finally {
+      const row = original.rows[0];
+      if (row !== undefined)
+        await pool.query(
+          `UPDATE event_store.runtime_config
+              SET cdc_reconciliation_required=$1,cdc_delivery_incident_epoch=$2,
+                  cdc_reconciled_incident_epoch=$3
+            WHERE singleton`,
+          [
+            row.cdc_reconciliation_required,
+            row.cdc_delivery_incident_epoch,
+            row.cdc_reconciled_incident_epoch,
+          ],
+        );
+    }
+    const definition = await pool.query<{ definition: string }>(
+      `SELECT pg_get_functiondef(
+         'event_store.activate_recovery_cdc_slot(text,text,bigint)'::regprocedure
+       ) AS definition`,
+    );
+    expect(definition.rows[0]?.definition).toContain(
+      "runtime_config WHERE singleton FOR UPDATE",
+    );
+    expect(definition.rows[0]?.definition).toContain(
+      "recovery activation requires delivery incident reconciliation",
+    );
+  });
+
   it("rejects append admission for a non-failover CDC slot", async () => {
     const original = await pool.query<{ cdc_slot_name: string }>(
       "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
