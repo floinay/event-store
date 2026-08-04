@@ -158,6 +158,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         throw new Error("release latency profile requires at least 30 minutes");
       const committed = new Map<string, number>();
       const observed = new Map<string, number>();
+      const observedCount = new Map<string, number>();
       const kafka = new KafkaJS.Kafka({
         kafkaJS: { brokers: [stack.kafkaBroker()] },
       });
@@ -195,6 +196,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
             const eventId = headerText(message.headers?.id);
             if (eventId === undefined) return;
             observed.set(eventId, receivedAt);
+            observedCount.set(eventId, (observedCount.get(eventId) ?? 0) + 1);
             if (eventId === warmupEventId) warmupObserved();
             busyWork(consumerCpuWorkMs);
             if (appendsFinished && allSamplesReceived(committed, observed)) {
@@ -285,6 +287,11 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       };
       console.info(`CDC latency metrics: ${JSON.stringify(metrics)}`);
       expect(metrics.samples).toBeGreaterThanOrEqual(sampleCount);
+      expect(
+        [...committed.keys()].every(
+          (eventId) => observedCount.get(eventId) === 1,
+        ),
+      ).toBe(true);
       expect(samples.every((sample) => sample >= 0)).toBe(true);
       expect(samples.every((sample) => sample <= 50)).toBe(true);
       expect(metrics.p50).toBeLessThanOrEqual(50);
