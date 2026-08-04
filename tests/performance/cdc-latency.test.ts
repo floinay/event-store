@@ -14,7 +14,7 @@ interface AppendClient extends grpc.Client {
   AppendToStream(
     request: Record<string, unknown>,
     callback: (error: grpc.ServiceError | null) => void,
-  ): void;
+  ): grpc.ClientUnaryCall;
 }
 
 function percentile(samples: readonly number[], quantile: number): number {
@@ -123,9 +123,13 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       const aggregateId = uuidv7();
       // Register before append so a very fast consumer cannot drop the sample.
       committed.set(requestId, Number.NaN);
-      const startedAt = performance.now();
-      await append(client, requestId, aggregateId, String(index));
-      committed.set(requestId, startedAt);
+      const committedAt = await append(
+        client,
+        requestId,
+        aggregateId,
+        String(index),
+      );
+      committed.set(requestId, committedAt);
       if (
         committed.size === sampleCount &&
         [...committed.keys()].every(
@@ -165,9 +169,11 @@ function append(
   requestId: string,
   aggregateId: string,
   index: string,
-): Promise<void> {
+): Promise<number> {
   return new Promise((resolve, reject) => {
-    client.AppendToStream(
+    let committedAt: number | undefined;
+    let metadataError: Error | undefined;
+    const call = client.AppendToStream(
       {
         request_id: requestId,
         namespace: "latency",
@@ -189,7 +195,28 @@ function append(
           },
         ],
       },
-      (error) => (error === null ? resolve() : reject(error)),
+      (error) => {
+        if (error !== null) {
+          reject(error);
+          return;
+        }
+        if (metadataError !== undefined) {
+          reject(metadataError);
+          return;
+        }
+        if (committedAt === undefined) {
+          reject(new Error("append acknowledgement omitted SQL commit span"));
+          return;
+        }
+        resolve(committedAt);
+      },
     );
+    call.once("metadata", (metadata) => {
+      const value = metadata.get("x-event-store-commit-monotonic-ms")[0];
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed))
+        metadataError = new Error("invalid SQL commit monotonic span metadata");
+      else committedAt = parsed;
+    });
   });
 }
