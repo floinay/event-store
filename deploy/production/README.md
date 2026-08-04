@@ -45,5 +45,6 @@ slot, Connect, and Kafka again on the new timeline.
 Each Event Store replica checks that delivery chain every five seconds
 (`CDC_DELIVERY_HEALTH_CHECK_INTERVAL_MS`). A failed check persistently closes
 append admission in PostgreSQL, including for existing gRPC connections; a
-healthy chain reopens it. Storage-only deployments keep CDC admission disabled
-and do not use this fence.
+healthy chain reopens it. When the latency probe is configured, its fresh
+read-committed consumer receipt is also required before reopening. Storage-only
+deployments keep CDC admission disabled and do not use this fence.

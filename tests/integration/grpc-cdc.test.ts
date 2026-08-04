@@ -207,6 +207,35 @@ suite("gRPC to CDC", () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       expect(metrics).toContain("event_store_cdc_latency_probe_up 0");
+      await expect(
+        new Promise<Record<string, unknown>>((resolve, reject) =>
+          client.AppendToStream(
+            {
+              request_id: uuidv7(),
+              namespace: "orders",
+              aggregate_type: "Order",
+              aggregate_id: uuidv7(),
+              expected_revision: { no_stream: {} },
+              context: {
+                correlation_id: uuidv7(),
+                actor_json: Buffer.from(
+                  JSON.stringify({ kind: "user", subjectRef: "usr_probe" }),
+                ),
+              },
+              events: [
+                {
+                  event_name: "order.created",
+                  schema_version: 1,
+                  occurred_at: "2026-08-04T10:12:18.120Z",
+                  payload_json: Buffer.from(JSON.stringify({ orderRef: "o3" })),
+                },
+              ],
+            },
+            (error, value) =>
+              error === null ? resolve(value ?? {}) : reject(error),
+          ),
+        ),
+      ).rejects.toMatchObject({ code: grpc.status.RESOURCE_EXHAUSTED });
     } finally {
       await stack.setConnectKafkaEnabled(true);
       await new Promise<void>((resolve) => probeServer.tryShutdown(resolve));

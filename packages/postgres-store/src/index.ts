@@ -180,6 +180,30 @@ export class PostgresEventStore {
     });
   }
 
+  /**
+   * Emits the fixed internal probe event. Unlike normal appends, this remains
+   * available while delivery admission is closed so it can provide the proof
+   * required to reopen that fence.
+   */
+  async appendCdcLatencyProbe(requestId: string): Promise<AppendResult> {
+    return this.withSession(async (client) => {
+      const result = await client.query<{
+        append_cdc_latency_probe: AppendResult;
+      }>(
+        "SELECT event_store.append_cdc_latency_probe($1) AS append_cdc_latency_probe",
+        [requestId],
+      );
+      const value = result.rows[0]?.append_cdc_latency_probe;
+      if (value === undefined)
+        throw new Error("CDC latency probe append returned no result");
+      Object.defineProperty(value, "commitEpochMs", {
+        value: Date.now(),
+        enumerable: false,
+      });
+      return value;
+    });
+  }
+
   async getStreamHead(
     namespace: string,
     aggregateType: string,

@@ -171,31 +171,8 @@ async function startCdcLatencyProbe(
   });
   connected = true;
   const publish = async (): Promise<void> => {
-    const now = new Date().toISOString();
     const requestId = uuidv7();
-    const result = await store.append({
-      producerService: "event-store-latency-probe",
-      requestId,
-      namespace: "system",
-      aggregateType: "CdcLatencyProbe",
-      aggregateId: uuidv7(),
-      expectedRevision: { kind: "no_stream" },
-      events: [
-        {
-          eventName: "system.cdc.latency.probe",
-          schemaVersion: 1,
-          occurredAt: now,
-          payload: {},
-        },
-      ],
-      context: {
-        requestId,
-        correlationId: uuidv7(),
-        causationId: null,
-        actor: { kind: "service", subjectRef: "event-store-latency-probe" },
-        trafficClass: "standard",
-      },
-    });
+    const result = await store.appendCdcLatencyProbe(requestId);
     const eventId = result.events[0]?.eventId;
     if (eventId !== undefined && result.commitEpochMs !== undefined)
       pending.set(eventId, result.commitEpochMs);
@@ -536,6 +513,8 @@ export async function startServer(
     }
     if (kafkaBrokers !== undefined)
       await verifyKafkaReadiness(kafkaBrokers, kafkaTopic, kafkaMinIsr);
+    if (latencyProbe !== undefined && !latencyProbe.up())
+      throw new Error("CDC latency probe has not proved end-to-end delivery");
   };
   const reconcileCdcDeliveryAdmission = async (): Promise<void> => {
     try {
