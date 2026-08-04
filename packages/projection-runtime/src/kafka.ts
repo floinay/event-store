@@ -149,7 +149,13 @@ export class KafkaProjectionRunner {
       await Promise.all(assignments.map((assignment) => alignPartition(assignment)));
     };
     await consumer.run({
-      eachMessage: async ({ topic, partition, message, pause, heartbeat }) => {
+      eachMessage: async ({
+        topic,
+        partition,
+        message,
+        pause,
+        heartbeat,
+      }) => {
         await assigned;
         if (message.key === null || message.value === null) {
           pause();
@@ -212,7 +218,12 @@ export class KafkaProjectionRunner {
           readCommittedGapAttempts.delete(attempt);
         }
         let failure: unknown;
+        const processingDeadline = Date.now() + 10_000;
         for (const delay of projectionRetryDelaysMs) {
+          if (Date.now() >= processingDeadline)
+            throw new Error(
+              `projection retry exceeded 10s revoke bound for ${topic}/${partition}`,
+            );
           try {
             await withHeartbeats(
               () =>
@@ -223,10 +234,17 @@ export class KafkaProjectionRunner {
             );
           } catch (error) {
             failure = error;
-            await withHeartbeats(() => wait(delay), heartbeat);
+            await withHeartbeats(
+              () => wait(Math.min(delay, Math.max(0, processingDeadline - Date.now()))),
+              heartbeat,
+            );
             continue;
           }
           for (const commitDelay of projectionRetryDelaysMs) {
+            if (Date.now() >= processingDeadline)
+              throw new Error(
+                `projection commit retry exceeded 10s revoke bound for ${topic}/${partition}`,
+              );
             try {
               await consumer.commitOffsets([
                 {
@@ -242,7 +260,16 @@ export class KafkaProjectionRunner {
               return;
             } catch (commitError) {
               failure = commitError;
-              await withHeartbeats(() => wait(commitDelay), heartbeat);
+              await withHeartbeats(
+                () =>
+                  wait(
+                    Math.min(
+                      commitDelay,
+                      Math.max(0, processingDeadline - Date.now()),
+                    ),
+                  ),
+                heartbeat,
+              );
             }
           }
           // The DB checkpoint is durable. Retrying this record as a duplicate is
