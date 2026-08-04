@@ -267,7 +267,7 @@ EOF
         },
         {
           topic: "event-store.projection-dlq.v1",
-          numPartitions: 1,
+          numPartitions: 24,
           replicationFactor: 1,
           configEntries: [
             { name: "cleanup.policy", value: "delete" },
