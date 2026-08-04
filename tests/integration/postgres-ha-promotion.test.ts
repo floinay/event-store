@@ -190,15 +190,15 @@ suite("PostgreSQL HA promotion", () => {
         await pool.end();
       }
     });
-    const failoverPreflight = new Pool({ connectionString: standbyUrl });
+    const unsyncedCandidate = new Pool({ connectionString: standbyUrl });
     try {
       await expect(
-        failoverPreflight.query(
+        unsyncedCandidate.query(
           "SELECT event_store.assert_failover_candidate('event_store_live')",
         ),
-      ).resolves.toBeDefined();
+      ).rejects.toMatchObject({ code: "P0001" });
     } finally {
-      await failoverPreflight.end();
+      await unsyncedCandidate.end();
     }
     const pool = new Pool({ connectionString: primaryUrl });
     try {
@@ -232,6 +232,16 @@ suite("PostgreSQL HA promotion", () => {
         await pool.end();
       }
     });
+    const failoverPreflight = new Pool({ connectionString: standbyUrl });
+    try {
+      await expect(
+        failoverPreflight.query(
+          "SELECT event_store.assert_failover_candidate('event_store_live')",
+        ),
+      ).resolves.toBeDefined();
+    } finally {
+      await failoverPreflight.end();
+    }
     const kafkaExternalPort = await new RandomPortGenerator().generatePort();
     kafka = await new GenericContainer("apache/kafka:4.3.1")
       .withEnvironment({
