@@ -153,6 +153,7 @@ async function startCdcLatencyProbe(
     { commitEpochMs: number; timelineId: number }
   >();
   const earlyProbeReceipts = new Map<string, number>();
+  const maxEarlyProbeReceipts = 1_024;
   let connected = false;
   let lastMeasurementEpochMs: number | undefined;
   let lastMeasurementTimelineId: number | undefined;
@@ -171,8 +172,11 @@ async function startCdcLatencyProbe(
       if (committedEpochMs === undefined) {
         const type = message.headers?.type;
         const eventType = (Array.isArray(type) ? type[0] : type)?.toString();
-        if (eventType === "system.cdc.latency.probe")
+        if (eventType === "system.cdc.latency.probe") {
+          if (earlyProbeReceipts.size >= maxEarlyProbeReceipts)
+            earlyProbeReceipts.delete(earlyProbeReceipts.keys().next().value!);
           earlyProbeReceipts.set(eventId, receivedEpochMs);
+        }
         return;
       }
       pending.delete(eventId);
