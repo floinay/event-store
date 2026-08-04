@@ -249,4 +249,112 @@ suite("projection recovery", () => {
       await dlq.disconnect().catch(() => undefined);
     }
   }, 120_000);
+
+  it("keeps a malformed Kafka record as a durable DLQ diagnostic", async () => {
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [stack.kafkaBroker()] },
+    });
+    const sourceTopic = `projection-malformed-${uuidv7()}`;
+    const admin = kafka.admin();
+    await admin.connect();
+    await admin.createTopics({
+      topics: [{ topic: sourceTopic, numPartitions: 1, replicationFactor: 1 }],
+    });
+    await admin.disconnect();
+    const generationId = uuidv7();
+    const projectionName = "malformed";
+    await pool.query(
+      "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ($1,$2,'building',clock_timestamp())",
+      [projectionName, generationId],
+    );
+    const dlq = kafka.consumer({
+      kafkaJS: {
+        groupId: `malformed-dlq-${uuidv7()}`,
+        autoCommit: false,
+        fromBeginning: false,
+        readUncommitted: false,
+      },
+    });
+    await dlq.connect();
+    await dlq.subscribe({
+      topics: ["event-store.projection-dlq.v1"],
+      replace: true,
+    });
+    let resolveDlq!: (key: string) => void;
+    const published = new Promise<string>((resolve, reject) => {
+      resolveDlq = resolve;
+      setTimeout(
+        () => reject(new Error("malformed record was not published to DLQ")),
+        70_000,
+      );
+    });
+    await dlq.run({
+      eachMessage: async ({ message }) => {
+        const value = JSON.parse(message.value?.toString() ?? "{}") as {
+          envelope?: { rawBase64?: string };
+        };
+        if (
+          value.envelope?.rawBase64 ===
+          Buffer.from("not-json").toString("base64")
+        )
+          resolveDlq(message.key?.toString() ?? "");
+      },
+    });
+    const identity = { name: projectionName, generationId };
+    const runner = new KafkaProjectionRunner(
+      {
+        brokers: [stack.kafkaBroker()],
+        groupId: `malformed-${uuidv7()}`,
+        topic: sourceTopic,
+      },
+      new ProjectionTransactionRunner(pool, identity, (event) => event),
+      async () => undefined,
+      new ProjectionCheckpointStore(pool, identity),
+      new ProjectionFailureReporter(pool, identity),
+    );
+    const consumer = await runner.start();
+    const producer = kafka.producer({
+      kafkaJS: { idempotent: true, acks: -1 },
+    });
+    await producer.connect();
+    try {
+      await producer.send({
+        topic: sourceTopic,
+        messages: [{ key: "malformed", value: "not-json" }],
+      });
+      await expect(published).resolves.toMatch(
+        new RegExp(
+          `^${projectionName}\\|${generationId}\\|${sourceTopic}\\|0\\|0$`,
+        ),
+      );
+      await expect(
+        pool.query<{
+          event_id: string;
+          envelope_sha256: string;
+          attempt_count: number;
+          dlq_published_at: string | null;
+        }>(
+          `SELECT event_id::text,envelope_sha256,attempt_count,dlq_published_at
+             FROM projection_runtime.failures
+            WHERE projection_name=$1 AND generation_id=$2 AND topic_name=$3`,
+          [projectionName, generationId, sourceTopic],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            event_id: expect.stringMatching(
+              /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+            ),
+            envelope_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+            attempt_count: 8,
+            dlq_published_at: expect.any(String),
+          },
+        ],
+      });
+    } finally {
+      await producer.disconnect().catch(() => undefined);
+      await consumer.disconnect().catch(() => undefined);
+      await dlq.disconnect().catch(() => undefined);
+    }
+  }, 90_000);
 });
