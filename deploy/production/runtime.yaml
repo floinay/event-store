@@ -75,8 +75,18 @@ spec:
             - { name: CONFIG_STORAGE_REPLICATION_FACTOR, value: "3" }
             - { name: OFFSET_STORAGE_REPLICATION_FACTOR, value: "3" }
             - { name: STATUS_STORAGE_REPLICATION_FACTOR, value: "3" }
+            - { name: KEY_CONVERTER, value: org.apache.kafka.connect.storage.StringConverter }
+            - { name: VALUE_CONVERTER, value: org.apache.kafka.connect.json.JsonConverter }
+            - { name: VALUE_CONVERTER_SCHEMAS_ENABLE, value: "false" }
+            - { name: HEADER_CONVERTER, value: org.apache.kafka.connect.storage.SimpleHeaderConverter }
             - { name: EXACTLY_ONCE_SOURCE_SUPPORT, value: enabled }
             - { name: CONNECT_EXACTLY_ONCE_SOURCE_SUPPORT, value: enabled }
+            - { name: TOPIC_CREATION_ENABLE, value: "false" }
+            - { name: PRODUCER_ACKS, value: all }
+            - { name: PRODUCER_ENABLE_IDEMPOTENCE, value: "true" }
+            - { name: PRODUCER_LINGER_MS, value: "0" }
+            - { name: PRODUCER_MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, value: "5" }
+            - { name: CONSUMER_ISOLATION_LEVEL, value: read_committed }
             - { name: CONNECT_CONFIG_PROVIDERS, value: file }
             - { name: CONNECT_CONFIG_PROVIDERS_FILE_CLASS, value: org.apache.kafka.common.config.provider.FileConfigProvider }
           volumeMounts:

@@ -22,6 +22,9 @@ describe("production HA topology", () => {
     expect(runtime.match(/replicas: 3/g)).toHaveLength(2);
     expect(runtime).toContain("EXACTLY_ONCE_SOURCE_SUPPORT");
     expect(runtime).toContain("CONNECT_EXACTLY_ONCE_SOURCE_SUPPORT");
+    expect(runtime).toContain("CONSUMER_ISOLATION_LEVEL");
+    expect(runtime).toContain("HEADER_CONVERTER");
+    expect(runtime).toContain("TOPIC_CREATION_ENABLE");
     expect(preflight).toContain("assert_failover_candidate('event_store_live')");
     expect(bootstrap).toContain("event-store-kafka-kafka-bootstrap:9092");
     expect(bootstrap).toContain("http://event-store-connect:8083");
