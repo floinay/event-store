@@ -30,6 +30,8 @@ describe("production HA topology", () => {
     expect(runtime).toContain("CONSUMER_ISOLATION_LEVEL");
     expect(runtime).toContain("HEADER_CONVERTER");
     expect(runtime).toContain("TOPIC_CREATION_ENABLE");
+    expect(runtime).toContain("CONNECT_METRICS_PORT");
+    expect(runtime).toContain("jmx-exporter");
     expect(preflight).toContain("assert_failover_candidate('event_store_live')");
     expect(bootstrap).toContain("event-store-kafka-kafka-bootstrap:9092");
     expect(bootstrap).toContain("http://event-store-connect:8083");

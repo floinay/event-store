@@ -4,3 +4,7 @@ resources:
   - postgres.yaml
   - kafka.yaml
   - runtime.yaml
+configMapGenerator:
+  - name: event-store-connect-jmx
+    files:
+      - config.yaml=connect-metrics-config.yaml

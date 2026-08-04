@@ -1,4 +1,21 @@
 import { join } from "node:path";
+
+export function connectQueueRatio(metrics: string): number {
+  const metric = (name: string): number => {
+    const line = metrics
+      .split("\n")
+      .find((entry) => entry.startsWith(`${name}{`) || entry.startsWith(`${name} `));
+    if (line === undefined) throw new Error(`missing Connect metric ${name}`);
+    const value = Number(line.trim().split(/\s+/).at(-1));
+    if (!Number.isFinite(value) || value < 0)
+      throw new Error(`invalid Connect metric ${name}`);
+    return value;
+  };
+  const remaining = metric("event_store_connect_queue_remaining_capacity");
+  const total = metric("event_store_connect_queue_total_capacity");
+  if (total <= 0) throw new Error("invalid Connect queue total capacity");
+  return remaining / total;
+}
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import * as grpc from "@grpc/grpc-js";
@@ -206,6 +223,7 @@ export async function startServer(): Promise<grpc.Server> {
     appendDurationSeconds: 0,
   };
   const connectUrl = process.env.CONNECT_URL;
+  const connectMetricsPort = process.env.CONNECT_METRICS_PORT;
   const healthAddress = process.env.HTTP_LISTEN_ADDRESS;
   const health =
     healthAddress === undefined
@@ -247,7 +265,7 @@ export async function startServer(): Promise<grpc.Server> {
               );
               const body = (await status.json()) as {
                 connector?: { state?: string };
-                tasks?: { state?: string }[];
+                tasks?: { state?: string; worker_id?: string }[];
               };
               if (
                 !status.ok ||
@@ -256,6 +274,22 @@ export async function startServer(): Promise<grpc.Server> {
                 body.tasks[0]?.state !== "RUNNING"
               )
                 throw new Error("CDC connector is not ready");
+              if (connectMetricsPort !== undefined) {
+                if (!/^\d+$/.test(connectMetricsPort))
+                  throw new Error("CONNECT_METRICS_PORT must be numeric");
+                const workerId = body.tasks[0]?.worker_id;
+                const workerHost = workerId?.replace(/:\d+$/, "");
+                if (workerHost === undefined || workerHost === "")
+                  throw new Error("CDC task worker id is unavailable");
+                const metrics = await fetch(
+                  `http://${workerHost}:${connectMetricsPort}/metrics`,
+                ).then((result) => {
+                  if (!result.ok) throw new Error("Connect metrics are unavailable");
+                  return result.text();
+                });
+                if (connectQueueRatio(metrics) < 0.2)
+                  throw new Error("CDC Connect queue is saturated");
+              }
             }
             response.writeHead(200).end("ready\n");
           })().catch(() => response.writeHead(503).end("not ready\n"));

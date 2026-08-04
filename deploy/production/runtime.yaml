@@ -36,6 +36,8 @@ spec:
                 secretKeyRef: { name: event-store-app, key: database-url }
             - name: CONNECT_URL
               value: http://event-store-connect:8083
+            - name: CONNECT_METRICS_PORT
+              value: "9404"
             - name: CDC_WAL_BUDGET_BYTES
               value: "8589934592"
           readinessProbe:
@@ -89,8 +91,21 @@ spec:
             - { name: CONSUMER_ISOLATION_LEVEL, value: read_committed }
             - { name: CONNECT_CONFIG_PROVIDERS, value: file }
             - { name: CONNECT_CONFIG_PROVIDERS_FILE_CLASS, value: org.apache.kafka.common.config.provider.FileConfigProvider }
+            - { name: JMXPORT, value: "9999" }
+            - { name: JMXHOST, value: 127.0.0.1 }
+            - name: CONNECT_REST_ADVERTISED_HOST_NAME
+              valueFrom:
+                fieldRef: { fieldPath: status.podIP }
+            - { name: CONNECT_REST_ADVERTISED_PORT, value: "8083" }
           volumeMounts:
             - { name: cdc-secret, mountPath: /run/secrets, readOnly: true }
+        - name: jmx-exporter
+          image: event-store-connect-metrics:latest
+          ports: [{ name: metrics, containerPort: 9404 }]
+          volumeMounts:
+            - { name: jmx-config, mountPath: /etc/jmx-exporter, readOnly: true }
       volumes:
         - name: cdc-secret
           secret: { secretName: event-store-cdc-properties }
+        - name: jmx-config
+          configMap: { name: event-store-connect-jmx }
