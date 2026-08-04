@@ -230,6 +230,7 @@ export class ReplayCoordinator {
   }
 
   async teardown(identity: ReplayIdentity): Promise<void> {
+    const slotName = `event_store_replay_${identity.replayId.replaceAll("-", "_")}`;
     const response = await fetch(
       `${this.connectorUrl}/connectors/event-store-replay-${identity.replayId}`,
       { method: "DELETE" },
@@ -238,9 +239,22 @@ export class ReplayCoordinator {
       throw new Error(
         `replay connector deletion failed: ${await response.text()}`,
       );
-    await this.pool.query("SELECT pg_drop_replication_slot($1)", [
-      `event_store_replay_${identity.replayId.replaceAll("-", "_")}`,
-    ]);
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const slot = await this.pool.query<{ active: boolean }>(
+        "SELECT active FROM pg_replication_slots WHERE slot_name=$1",
+        [slotName],
+      );
+      if (slot.rows[0]?.active !== true) {
+        if (slot.rows[0] !== undefined)
+          await this.pool.query("SELECT pg_drop_replication_slot($1)", [
+            slotName,
+          ]);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`replay connector did not release slot ${slotName}`);
   }
 }
 
