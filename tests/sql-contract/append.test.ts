@@ -681,6 +681,81 @@ suite("append SQL contract", () => {
     );
   });
 
+  it("fences a health failure that waits behind completed reconciliation", async () => {
+    const original = await pool.query<{
+      cdc_delivery_healthy: boolean;
+      cdc_delivery_startup_pending: boolean;
+      cdc_reconciliation_required: boolean;
+      cdc_delivery_incident_epoch: string;
+      cdc_reconciled_incident_epoch: string | null;
+    }>(
+      `SELECT cdc_delivery_healthy,cdc_delivery_startup_pending,cdc_reconciliation_required,
+              cdc_delivery_incident_epoch,cdc_reconciled_incident_epoch
+         FROM event_store.runtime_config WHERE singleton`,
+    );
+    const blocker = await pool.connect();
+    const failedHealthCheck = await pool.connect();
+    try {
+      await pool.query(
+        `UPDATE event_store.runtime_config
+            SET cdc_delivery_healthy=false,cdc_delivery_startup_pending=false,
+                cdc_reconciliation_required=false,cdc_delivery_incident_epoch=41,
+                cdc_reconciled_incident_epoch=41
+          WHERE singleton`,
+      );
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT 1 FROM event_store.runtime_config WHERE singleton FOR UPDATE",
+      );
+      let completed = false;
+      const failure = failedHealthCheck
+        .query("SELECT event_store.set_cdc_delivery_health(false)")
+        .finally(() => {
+          completed = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(completed).toBe(false);
+      await blocker.query("COMMIT");
+      await failure;
+      await expect(
+        pool.query<{
+          cdc_reconciliation_required: boolean;
+          cdc_delivery_incident_epoch: string;
+        }>(
+          `SELECT cdc_reconciliation_required,cdc_delivery_incident_epoch
+             FROM event_store.runtime_config WHERE singleton`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            cdc_reconciliation_required: true,
+            cdc_delivery_incident_epoch: "42",
+          },
+        ],
+      });
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      failedHealthCheck.release();
+      const row = original.rows[0];
+      if (row !== undefined)
+        await pool.query(
+          `UPDATE event_store.runtime_config
+              SET cdc_delivery_healthy=$1,cdc_delivery_startup_pending=$2,
+                  cdc_reconciliation_required=$3,cdc_delivery_incident_epoch=$4,
+                  cdc_reconciled_incident_epoch=$5
+            WHERE singleton`,
+          [
+            row.cdc_delivery_healthy,
+            row.cdc_delivery_startup_pending,
+            row.cdc_reconciliation_required,
+            row.cdc_delivery_incident_epoch,
+            row.cdc_reconciled_incident_epoch,
+          ],
+        );
+    }
+  });
+
   it("rejects append admission for a non-failover CDC slot", async () => {
     const original = await pool.query<{ cdc_slot_name: string }>(
       "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
