@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { replayConnectorConfig, replayTopicName } from "@event-store/replay";
+import { readFile } from "node:fs/promises";
 
 describe("replay connector", () => {
   it("uses the same canonical envelope and headers as the live connector", () => {
@@ -28,5 +29,14 @@ describe("replay connector", () => {
 describe("replay topic", () => {
   it("uses the stable, per-replay route topic name", () => {
     expect(replayTopicName("aug-2026")).toBe("event-store.replay.aug-2026.v1");
+  });
+});
+
+describe("live Connect worker", () => {
+  it("keeps the canonical envelope as an unquoted JSON record", async () => {
+    const worker = await readFile("deploy/connect/worker.properties", "utf8");
+    expect(worker).toContain(
+      "value.converter=org.apache.kafka.connect.storage.StringConverter",
+    );
   });
 });
