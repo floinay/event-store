@@ -67,7 +67,10 @@ function sleep(milliseconds: number): Promise<void> {
 }
 
 export class PostgresEventStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly walBudgetBytes?: bigint,
+  ) {}
 
   async append(input: AppendInput): Promise<AppendResult> {
     const events = input.events.map((event) => EventDraftSchema.parse(event));
@@ -81,6 +84,11 @@ export class PostgresEventStore {
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await this.withSession(async (client) => {
+          if (this.walBudgetBytes !== undefined)
+            await client.query(
+              "SELECT event_store.assert_append_cdc_ready($1)",
+              [this.walBudgetBytes.toString()],
+            );
           let result: { rows: { append_v1: AppendResult }[] };
           try {
             result = await client.query<{ append_v1: AppendResult }>(

@@ -78,6 +78,11 @@ export function errorFrom(
     [code, machineCode] = [grpc.status.DATA_LOSS, "snapshot_nondeterminism"];
   else if (sqlCode === "P0002")
     [code, machineCode] = [grpc.status.NOT_FOUND, "stream_not_found"];
+  else if (sqlCode === "P0001")
+    [code, machineCode] = [
+      grpc.status.RESOURCE_EXHAUSTED,
+      "cdc_admission_closed",
+    ];
   else if (
     appendDispatched &&
     [
@@ -184,7 +189,14 @@ export async function startServer(): Promise<grpc.Server> {
     connectionString: url,
     max: Number(process.env.DB_POOL_SIZE ?? 20),
   });
-  const store = new PostgresEventStore(pool);
+  const walBudget = process.env.CDC_WAL_BUDGET_BYTES;
+  if (
+    walBudget === undefined ||
+    !/^\d+$/.test(walBudget) ||
+    BigInt(walBudget) <= 0n
+  )
+    throw new Error("CDC_WAL_BUDGET_BYTES must be a positive integer");
+  const store = new PostgresEventStore(pool, BigInt(walBudget));
   const protoPath =
     process.env.PROTO_PATH ??
     join(process.cwd(), "packages/contracts/proto/event_store.proto");

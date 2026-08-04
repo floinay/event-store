@@ -27,6 +27,7 @@ suite("gRPC to CDC", () => {
     await stack.start({ cdc: true, toxiproxy: true });
     process.env.DATABASE_URL = stack.databaseUrl;
     process.env.PRODUCER_SERVICE = "orders-command";
+    process.env.CDC_WAL_BUDGET_BYTES = String(8 * 1024 ** 3);
     process.env.GRPC_LISTEN_ADDRESS = "127.0.0.1:50061";
     process.env.GRPC_ALLOW_INSECURE = "true";
     server = await startServer();

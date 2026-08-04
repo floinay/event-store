@@ -31,6 +31,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     await stack.start({ cdc: true });
     process.env.DATABASE_URL = stack.databaseUrl;
     process.env.PRODUCER_SERVICE = "latency-probe";
+    process.env.CDC_WAL_BUDGET_BYTES = String(8 * 1024 ** 3);
     process.env.GRPC_LISTEN_ADDRESS = "127.0.0.1:50062";
     process.env.GRPC_ALLOW_INSECURE = "true";
     server = await startServer();
