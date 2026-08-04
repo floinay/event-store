@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
-import { uuidv7 } from "@event-store/contracts";
+import { canonicalJson, uuidv7 } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
 import {
   createProjectionEventTransformer,
@@ -289,11 +289,18 @@ async function observeBarrierTransport(
       );
       void consumer.run({
         eachMessage: async ({ message }) => {
-          const event = JSON.parse(message.value?.toString() ?? "{}") as {
+          const value = message.value?.toString() ?? "";
+          const event = JSON.parse(value || "{}") as {
             eventId?: string;
+            recordedAt?: string;
           };
-          if (event.eventId !== undefined && expected.has(event.eventId))
+          if (event.eventId !== undefined && expected.has(event.eventId)) {
+            expect(value).toBe(canonicalJson(event));
+            expect(message.timestamp).toBe(
+              String(Date.parse(event.recordedAt!)),
+            );
             observed.add(event.eventId);
+          }
           if (observed.size === expected.size) {
             clearTimeout(timeout);
             resolve();
