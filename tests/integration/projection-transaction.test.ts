@@ -10,6 +10,8 @@ import { EventStoreStack } from "../fixtures/event-store-stack.js";
 import type { Pool } from "pg";
 
 const suite = process.env.RUN_INTEGRATION === "true" ? describe : describe.skip;
+const sleep = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 suite("projection crash boundary", () => {
   const stack = new EventStoreStack();
@@ -206,7 +208,7 @@ suite("projection crash boundary", () => {
     ).toBe("processed");
   });
 
-  it("returns at the deadline when a handler ignores its cancellation signal", async () => {
+  it("prevents a timed-out handler from writing after its connection is released", async () => {
     const generationId = uuidv7();
     const aggregateId = uuidv7();
     const requestId = uuidv7();
@@ -260,9 +262,24 @@ suite("projection crash boundary", () => {
             streamRevision: event.streamRevision,
           },
         },
-        async () => new Promise<void>(() => undefined),
+        async (client, stored) => {
+          await sleep(100);
+          await client.query(
+            "INSERT INTO projection_test.events(event_id) VALUES ($1)",
+            [stored.eventId],
+          );
+        },
         { transactionTimeoutMs: 50 },
       ),
     ).rejects.toMatchObject({ code: "projection_handler_timeout" });
+    await sleep(150);
+    expect(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM projection_test.events WHERE event_id=$1",
+          [event.eventId],
+        )
+      ).rows[0]?.count,
+    ).toBe(0);
   });
 });

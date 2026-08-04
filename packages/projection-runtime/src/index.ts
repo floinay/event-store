@@ -274,6 +274,16 @@ export class ProjectionTransactionRunner {
     // uncaught process exception.
     const absorbTerminalClientError = (): void => undefined;
     client.on("error", absorbTerminalClientError);
+    let clientClosed = false;
+    let resolveClientClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClientClosed = resolve;
+    });
+    const markClientClosed = (): void => {
+      clientClosed = true;
+      resolveClientClosed();
+    };
+    client.once("end", markClientClosed);
     let discardClient = false;
     const abort = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -371,10 +381,17 @@ export class ProjectionTransactionRunner {
       throw error;
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
-      client.release(
-        discardClient ? new Error("transaction timeout") : undefined,
-      );
-      if (!discardClient) client.off("error", absorbTerminalClientError);
+      if (discardClient) {
+        // A handler can ignore AbortSignal and resume after this method has
+        // returned. Destroy and await the physical connection so it cannot
+        // issue a late query on a pooled session or affect a later record.
+        client.release(new Error("transaction timeout"));
+        if (!clientClosed) await closed;
+      } else {
+        client.release();
+        client.off("error", absorbTerminalClientError);
+        client.off("end", markClientClosed);
+      }
     }
   }
 }
