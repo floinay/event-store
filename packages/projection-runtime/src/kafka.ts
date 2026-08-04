@@ -149,14 +149,25 @@ export class KafkaProjectionRunner {
       await Promise.all(assignments.map((assignment) => alignPartition(assignment)));
     };
     await consumer.run({
-      eachMessage: async ({
-        topic,
-        partition,
-        message,
+      eachBatch: async ({
+        batch,
         pause,
         heartbeat,
+        isRunning,
+        isStale,
       }) => {
+        const topic = batch.topic;
+        const partition = batch.partition;
+        const message = batch.messages[0];
+        if (message === undefined) return;
+        const assertCurrentAssignment = (): void => {
+          if (!isRunning() || isStale())
+            throw new Error(
+              `projection assignment was revoked for ${topic}/${partition}`,
+            );
+        };
         await assigned;
+        assertCurrentAssignment();
         if (message.key === null || message.value === null) {
           pause();
           throw new Error("Kafka event record requires a key and value");
@@ -220,6 +231,7 @@ export class KafkaProjectionRunner {
         let failure: unknown;
         const processingDeadline = Date.now() + 10_000;
         for (const delay of projectionRetryDelaysMs) {
+          assertCurrentAssignment();
           if (Date.now() >= processingDeadline)
             throw new Error(
               `projection retry exceeded 10s revoke bound for ${topic}/${partition}`,
@@ -241,6 +253,7 @@ export class KafkaProjectionRunner {
             continue;
           }
           for (const commitDelay of projectionRetryDelaysMs) {
+            assertCurrentAssignment();
             if (Date.now() >= processingDeadline)
               throw new Error(
                 `projection commit retry exceeded 10s revoke bound for ${topic}/${partition}`,
