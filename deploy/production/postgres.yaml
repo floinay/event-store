@@ -46,6 +46,9 @@ spec:
     size: 200Gi
   monitoring:
     enablePodMonitor: true
+    customQueriesConfigMap:
+      - name: event-store-postgres-monitoring
+        key: custom-queries
 ---
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup

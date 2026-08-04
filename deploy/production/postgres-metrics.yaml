@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: event-store-postgres-monitoring
+  labels:
+    cnpg.io/reload: ""
+data:
+  custom-queries: |
+    event_store_logical_slot:
+      target_databases: [event_store]
+      query: |
+        SELECT
+          slot_name,
+          CASE WHEN active THEN 1 ELSE 0 END AS active,
+          CASE WHEN COALESCE(invalidation_reason, '') = '' THEN 0 ELSE 1 END AS invalidated,
+          CASE WHEN pg_is_in_recovery() AND NOT COALESCE(synced, false) THEN 1 ELSE 0 END AS unsynced_standby,
+          COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn), 0)::bigint AS retained_wal_bytes,
+          COALESCE(pg_wal_lsn_diff(confirmed_flush_lsn, '0/0'), 0)::bigint AS confirmed_flush_lsn_bytes
+        FROM pg_replication_slots
+        WHERE slot_type = 'logical' AND slot_name LIKE 'event_store_%'
+      metrics:
+        - slot_name:
+            usage: "LABEL"
+            description: "Logical Event Store replication slot"
+        - active:
+            usage: "GAUGE"
+            description: "Whether the logical slot is active"
+        - invalidated:
+            usage: "GAUGE"
+            description: "Whether PostgreSQL invalidated the logical slot"
+        - unsynced_standby:
+            usage: "GAUGE"
+            description: "Whether a standby copy of the logical slot is unsynchronized"
+        - retained_wal_bytes:
+            usage: "GAUGE"
+            description: "WAL retained by the logical slot in bytes"
+        - confirmed_flush_lsn_bytes:
+            usage: "GAUGE"
+            description: "Last confirmed logical-slot flush LSN as a numeric value"

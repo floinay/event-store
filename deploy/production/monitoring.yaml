@@ -66,3 +66,33 @@ spec:
           labels: { severity: page }
           annotations:
             summary: Debezium queue has less than 20 percent capacity remaining
+        - alert: EventStoreLogicalSlotWalWarning
+          expr: max(cnpg_event_store_logical_slot_retained_wal_bytes) > 4294967296
+          for: 2m
+          labels: { severity: warning }
+          annotations:
+            summary: Event Store logical slot retains over 50 percent of its WAL budget
+        - alert: EventStoreLogicalSlotWalHigh
+          expr: max(cnpg_event_store_logical_slot_retained_wal_bytes) > 6012954214
+          for: 2m
+          labels: { severity: page }
+          annotations:
+            summary: Event Store logical slot retains over 70 percent of its WAL budget
+        - alert: EventStoreLogicalSlotWalCritical
+          expr: max(cnpg_event_store_logical_slot_retained_wal_bytes) > 7301444403
+          for: 1m
+          labels: { severity: page }
+          annotations:
+            summary: Event Store logical slot retains over 85 percent of its WAL budget
+        - alert: EventStoreLogicalSlotInvalidated
+          expr: max(cnpg_event_store_logical_slot_invalidated) > 0
+          for: 1m
+          labels: { severity: page }
+          annotations:
+            summary: Event Store logical replication slot was invalidated
+        - alert: EventStoreLogicalSlotUnsyncedStandby
+          expr: max(cnpg_event_store_logical_slot_unsynced_standby) > 0
+          for: 1m
+          labels: { severity: page }
+          annotations:
+            summary: A standby logical replication slot is not synchronized

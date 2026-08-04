@@ -13,6 +13,7 @@ describe("production HA topology", () => {
       localPostgres,
       compose,
       monitoring,
+      postgresMetrics,
     ] = await Promise.all(
       ["postgres.yaml", "kafka.yaml", "runtime.yaml"]
         .map((file) => readFile(`deploy/production/${file}`, "utf8"))
@@ -23,6 +24,7 @@ describe("production HA topology", () => {
           readFile("deploy/postgres/postgresql.conf", "utf8"),
           readFile("deploy/docker-compose.yml", "utf8"),
           readFile("deploy/production/monitoring.yaml", "utf8"),
+          readFile("deploy/production/postgres-metrics.yaml", "utf8"),
         ]),
     );
     expect(postgres).toContain("instances: 3");
@@ -78,5 +80,20 @@ describe("production HA topology", () => {
     expect(monitoring).toContain("EventStoreAppendUnknownOutcome");
     expect(monitoring).toContain("EventStoreConnectSourceDisconnected");
     expect(monitoring).toContain("EventStoreConnectSourceLagP99High");
+    for (const alert of [
+      "EventStoreLogicalSlotWalWarning",
+      "EventStoreLogicalSlotWalHigh",
+      "EventStoreLogicalSlotWalCritical",
+      "EventStoreLogicalSlotInvalidated",
+      "EventStoreLogicalSlotUnsyncedStandby",
+    ])
+      expect(monitoring).toContain(alert);
+    for (const metric of [
+      "retained_wal_bytes",
+      "confirmed_flush_lsn_bytes",
+      "invalidated",
+      "unsynced_standby",
+    ])
+      expect(postgresMetrics).toContain(metric);
   });
 });
