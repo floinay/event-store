@@ -35,9 +35,8 @@ async function waitForConnector(url: string, name: string): Promise<void> {
       };
       if (
         status.connector?.state === "RUNNING" &&
-        status.tasks !== undefined &&
-        status.tasks.length > 0 &&
-        status.tasks.every((task) => task.state === "RUNNING")
+        status.tasks?.length === 1 &&
+        status.tasks[0]?.state === "RUNNING"
       )
         return;
     }
@@ -84,15 +83,20 @@ async function verifyCdcReadiness(database: Client): Promise<void> {
   const slot = await database.query<{
     exists: boolean;
     active: boolean;
+    failover: boolean;
     invalidationReason: string | null;
   }>(
-    "SELECT true AS exists, active, invalidation_reason AS \"invalidationReason\" FROM pg_replication_slots WHERE slot_name = 'event_store_live'",
+    "SELECT true AS exists, active, failover, invalidation_reason AS \"invalidationReason\" FROM pg_replication_slots WHERE slot_name = 'event_store_live'",
   );
   const row = slot.rows[0];
   if (row === undefined || row.invalidationReason !== null)
     throw new Error("event_store_live logical replication slot is unavailable");
   if (!row.active)
     throw new Error("event_store_live logical replication slot is not active");
+  if (!row.failover)
+    throw new Error(
+      "event_store_live logical replication slot is not failover-enabled",
+    );
 }
 
 export async function bootstrap(options: BootstrapOptions): Promise<void> {
