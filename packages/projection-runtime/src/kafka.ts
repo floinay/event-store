@@ -115,6 +115,11 @@ export class KafkaProjectionRunner {
       resolveAssigned = resolve;
       rejectAssigned = reject;
     });
+    // Startup can fail before eachBatch begins awaiting this gate. Keep the
+    // original rejected promise for an active batch, but mark that early
+    // rejection handled so a retention refusal is not an unhandled process
+    // rejection.
+    void assigned.catch(() => undefined);
     const expectedOffsets = new Map<string, bigint>();
     const readCommittedGapAttempts = new Set<string>();
     const alignPartition = async (assignment: {

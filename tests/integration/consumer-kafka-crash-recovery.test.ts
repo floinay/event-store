@@ -214,6 +214,98 @@ suite("projection consumer Kafka crash recovery", () => {
     90_000,
   );
 
+  it("refuses startup when Kafka retention removed the durable checkpoint", async () => {
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [stack.kafkaBroker()] },
+    });
+    const topic = `consumer-retention-${uuidv7()}`;
+    const admin = kafka.admin();
+    const producer = kafka.producer({
+      kafkaJS: { idempotent: true, acks: -1 },
+    });
+    const generationId = uuidv7();
+    const identity = { name: `retention-${generationId}`, generationId };
+    const event = {
+      eventId: uuidv7(),
+      namespace: "orders",
+      aggregateType: "Order",
+      aggregateId: uuidv7(),
+      streamRevision: "1",
+      eventNumber: "1",
+      eventName: "order.created",
+      schemaVersion: 1,
+      occurredAt: "2026-08-04T10:12:18.120Z",
+      recordedAt: "2026-08-04T10:12:18.120Z",
+      producerService: "retention-test",
+      context: {
+        requestId: uuidv7(),
+        correlationId: uuidv7(),
+        causationId: null,
+        actor: { kind: "service" as const, subjectRef: "retention-test" },
+      },
+      payload: { kind: "retention" },
+    };
+    const value = canonicalJson(event);
+    try {
+      await admin.connect();
+      await admin.createTopics({
+        topics: [{ topic, numPartitions: 1, replicationFactor: 1 }],
+      });
+      await producer.connect();
+      await producer.send({
+        topic,
+        messages: [
+          {
+            key: partitionKey(event),
+            value,
+            headers: {
+              id: event.eventId,
+              type: event.eventName,
+              envelopeHash: createHash("sha256").update(value).digest("hex"),
+              namespace: event.namespace,
+              aggregateType: event.aggregateType,
+              streamRevision: event.streamRevision,
+            },
+          },
+        ],
+      });
+      await admin.deleteTopicRecords({
+        topic,
+        partitions: [{ partition: 0, offset: "1" }],
+      });
+      await eventually(async () => {
+        const offsets = await admin.fetchTopicOffsets(topic, {
+          isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
+        });
+        return offsets[0]?.low === "1";
+      });
+      await pool.query(
+        "INSERT INTO projection_runtime.generations(projection_name,generation_id,status,created_at) VALUES ($1,$2,'building',clock_timestamp())",
+        [identity.name, identity.generationId],
+      );
+      await pool.query(
+        `INSERT INTO projection_runtime.checkpoints(projection_name,generation_id,topic_name,partition_no,next_offset,updated_at)
+         VALUES ($1,$2,$3,0,0,clock_timestamp())`,
+        [identity.name, identity.generationId, topic],
+      );
+      const runner = new KafkaProjectionRunner(
+        {
+          brokers: [stack.kafkaBroker()],
+          groupId: `consumer-retention-${generationId}`,
+          topic,
+        },
+        new ProjectionTransactionRunner(pool, identity, (stored) => stored),
+        async () => undefined,
+        new ProjectionCheckpointStore(pool, identity),
+        new ProjectionFailureReporter(pool, identity),
+      );
+      await expect(runner.start()).rejects.toThrow("below Kafka low watermark");
+    } finally {
+      await producer.disconnect().catch(() => undefined);
+      await admin.disconnect().catch(() => undefined);
+    }
+  }, 90_000);
+
   it("aborts an open projection transaction during consumer-group rebalance", async () => {
     const kafka = new KafkaJS.Kafka({
       kafkaJS: { brokers: [stack.kafkaBroker()] },
