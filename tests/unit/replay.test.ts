@@ -39,4 +39,15 @@ describe("live Connect worker", () => {
       "value.converter=org.apache.kafka.connect.json.JsonConverter",
     );
   });
+
+  it("places every projection-integrity header in the live connector", async () => {
+    const connector = JSON.parse(
+      await readFile("deploy/connector/event-store-live.json", "utf8"),
+    ) as { config: Record<string, string> };
+    const placement =
+      connector.config["transforms.outbox.table.fields.additional.placement"];
+    expect(placement).toContain("event_id:header:id");
+    expect(placement).toContain("event_name:header:type");
+    expect(placement).toContain("envelope_sha256:header:envelopeHash");
+  });
 });
