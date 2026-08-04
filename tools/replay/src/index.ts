@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { KafkaJS } from "@confluentinc/kafka-javascript";
 import type { Pool } from "pg";
 import { partitionKey, uuidv7 } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
@@ -22,6 +23,48 @@ export interface ReplayBarrier {
 }
 
 const kafkaPartitionCount = 24;
+
+export function replayTopicName(replayId: string): string {
+  if (!/^[a-z0-9-]{1,63}$/.test(replayId))
+    throw new Error("replayId must be lowercase alphanumeric/hyphen");
+  return `event-store.replay.${replayId}.v1`;
+}
+
+/** Creates and verifies the fixed partition topology required by replay barriers. */
+export async function ensureReplayTopic(
+  brokers: string[],
+  replayId: string,
+  replicationFactor = 3,
+): Promise<void> {
+  if (brokers.length === 0)
+    throw new Error("at least one Kafka broker is required");
+  const topic = replayTopicName(replayId);
+  const kafka = new KafkaJS.Kafka({ kafkaJS: { brokers } });
+  const admin = kafka.admin();
+  await admin.connect();
+  try {
+    await admin.createTopics({
+      topics: [
+        {
+          topic,
+          numPartitions: kafkaPartitionCount,
+          replicationFactor,
+          configEntries: [
+            { name: "cleanup.policy", value: "delete" },
+            { name: "min.insync.replicas", value: "2" },
+          ],
+        },
+      ],
+    });
+    const metadata = await admin.fetchTopicMetadata({ topics: [topic] });
+    if (metadata[0]?.partitions.length !== kafkaPartitionCount)
+      throw new Error(
+        `replay topic ${topic} must have ${kafkaPartitionCount} partitions`,
+      );
+  } finally {
+    await admin.disconnect();
+  }
+}
 
 function murmur2(bytes: Uint8Array): number {
   let hash = 0x9747b28c ^ bytes.length;
@@ -123,6 +166,8 @@ export class ReplayCoordinator {
   constructor(
     private readonly pool: Pool,
     private readonly connectorUrl: string,
+    private readonly brokers: string[],
+    private readonly replayReplicationFactor = 3,
   ) {}
 
   async createGeneration(identity: ReplayIdentity): Promise<void> {
@@ -137,6 +182,11 @@ export class ReplayCoordinator {
     identity: ReplayIdentity,
     config: Record<string, string>,
   ): Promise<void> {
+    await ensureReplayTopic(
+      this.brokers,
+      identity.replayId,
+      this.replayReplicationFactor,
+    );
     const response = await fetch(
       `${this.connectorUrl}/connectors/event-store-replay-${identity.replayId}/config`,
       {
@@ -149,6 +199,37 @@ export class ReplayCoordinator {
       throw new Error(
         `replay connector deployment failed: ${await response.text()}`,
       );
+    const slotName = `event_store_replay_${identity.replayId.replaceAll("-", "_")}`;
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const [status, slot] = await Promise.all([
+        fetch(
+          `${this.connectorUrl}/connectors/event-store-replay-${identity.replayId}/status`,
+        ).then((result) =>
+          result.ok
+            ? (result.json() as Promise<{
+                connector?: { state?: string };
+                tasks?: { state?: string }[];
+              }>)
+            : undefined,
+        ),
+        this.pool.query<{ active: boolean }>(
+          "SELECT active FROM pg_replication_slots WHERE slot_name=$1",
+          [slotName],
+        ),
+      ]);
+      if (
+        status?.connector?.state === "RUNNING" &&
+        status.tasks?.length === 1 &&
+        status.tasks[0]?.state === "RUNNING" &&
+        slot.rows[0]?.active === true
+      )
+        return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(
+      `replay connector ${identity.replayId} did not become ready`,
+    );
   }
 
   async recordBarrier(
@@ -297,7 +378,7 @@ export function replayConnectorConfig(
     "transforms.outbox.table.field.event.type": "event_name",
     "transforms.outbox.table.field.event.payload": "event_envelope",
     "transforms.outbox.route.by.field": "topic_route",
-    "transforms.outbox.route.topic.replacement": `event-store.replay.${replayId}.v1`,
+    "transforms.outbox.route.topic.replacement": replayTopicName(replayId),
     "transforms.outbox.table.expand.json.payload": "false",
     "transforms.outbox.table.op.invalid.behavior": "fatal",
     "transforms.outbox.table.fields.additional.placement":

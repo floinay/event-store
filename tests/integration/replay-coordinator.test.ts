@@ -29,7 +29,7 @@ suite("replay coordinator", () => {
       generationId: uuidv7(),
       replayId: "orders-aug-2026",
     };
-    const coordinator = new ReplayCoordinator(pool, "http://unused");
+    const coordinator = new ReplayCoordinator(pool, "http://unused", []);
     await coordinator.createGeneration(identity);
     await expect(
       coordinator.activate(identity, {

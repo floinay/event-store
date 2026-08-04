@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { replayConnectorConfig } from "@event-store/replay";
+import { replayConnectorConfig, replayTopicName } from "@event-store/replay";
 
 describe("replay connector", () => {
   it("uses the same canonical envelope and headers as the live connector", () => {
@@ -22,5 +22,11 @@ describe("replay connector", () => {
     expect(
       config["transforms.outbox.table.fields.additional.placement"],
     ).toContain("envelope_sha256:header:envelopeHash");
+  });
+});
+
+describe("replay topic", () => {
+  it("uses the stable, per-replay route topic name", () => {
+    expect(replayTopicName("aug-2026")).toBe("event-store.replay.aug-2026.v1");
   });
 });
