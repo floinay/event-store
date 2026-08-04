@@ -31,8 +31,8 @@ export interface AppendResult {
   previousRevision: string;
   currentRevision: string;
   recordedAt: string;
-  /** UTC timestamp sampled immediately after PostgreSQL completed append. */
-  commitEpochMs: number;
+  /** Authoritative PostgreSQL COMMIT timestamp when the server exposes it. */
+  commitEpochMs?: number;
   events: readonly {
     eventId: string;
     streamRevision: string;
@@ -132,23 +132,17 @@ export class PostgresEventStore {
           if (row === undefined) throw new Error("append returned no result");
           const value = row?.append_v1;
           if (value === undefined) throw new Error("append returned no result");
-          const commitTimestamp = await client.query<{
-            commit_epoch_ms: string | null;
-          }>(
-            "SELECT (extract(epoch FROM pg_xact_commit_timestamp($1::xid)) * 1000)::text AS commit_epoch_ms",
-            [row.transaction_id],
+          const commitEpochMs = await this.commitEpochMs(
+            client,
+            row.transaction_id,
           );
-          const commitEpochMs = Number(
-            commitTimestamp.rows[0]?.commit_epoch_ms,
-          );
-          if (!Number.isFinite(commitEpochMs))
-            throw new Error("PostgreSQL commit timestamp is unavailable");
           // Keep this observation out of the durable idempotent result: a
           // retried request must retain its byte-equivalent response.
-          Object.defineProperty(value, "commitEpochMs", {
-            value: commitEpochMs,
-            enumerable: false,
-          });
+          if (commitEpochMs !== undefined)
+            Object.defineProperty(value, "commitEpochMs", {
+              value: commitEpochMs,
+              enumerable: false,
+            });
           return value;
         });
       } catch (error) {
@@ -188,19 +182,15 @@ export class PostgresEventStore {
       const value = row?.append_recovery_barrier;
       if (value === undefined)
         throw new Error("recovery barrier append returned no result");
-      const commitTimestamp = await client.query<{
-        commit_epoch_ms: string | null;
-      }>(
-        "SELECT (extract(epoch FROM pg_xact_commit_timestamp($1::xid)) * 1000)::text AS commit_epoch_ms",
-        [row.transaction_id],
+      const commitEpochMs = await this.commitEpochMs(
+        client,
+        row.transaction_id,
       );
-      const commitEpochMs = Number(commitTimestamp.rows[0]?.commit_epoch_ms);
-      if (!Number.isFinite(commitEpochMs))
-        throw new Error("PostgreSQL commit timestamp is unavailable");
-      Object.defineProperty(value, "commitEpochMs", {
-        value: commitEpochMs,
-        enumerable: false,
-      });
+      if (commitEpochMs !== undefined)
+        Object.defineProperty(value, "commitEpochMs", {
+          value: commitEpochMs,
+          enumerable: false,
+        });
       return value;
     });
   }
@@ -332,6 +322,24 @@ export class PostgresEventStore {
       return await fn(client);
     } finally {
       client.release();
+    }
+  }
+
+  private async commitEpochMs(
+    client: PoolClient,
+    transactionId: string,
+  ): Promise<number | undefined> {
+    try {
+      const result = await client.query<{ commit_epoch_ms: string | null }>(
+        "SELECT (extract(epoch FROM pg_xact_commit_timestamp($1::xid)) * 1000)::text AS commit_epoch_ms",
+        [transactionId],
+      );
+      const value = Number(result.rows[0]?.commit_epoch_ms);
+      return Number.isFinite(value) ? value : undefined;
+    } catch {
+      // The append transaction has already committed. Measurement must never
+      // change its durable acknowledgement or request-id retry semantics.
+      return undefined;
     }
   }
 

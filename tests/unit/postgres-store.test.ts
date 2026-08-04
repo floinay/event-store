@@ -28,10 +28,15 @@ const input = () => {
   };
 };
 
-function poolThatFails(error: Error & { code?: string }, failures: number) {
+function poolThatFails(
+  error: Error & { code?: string },
+  failures: number,
+  markerFails = false,
+) {
   let appendCalls = 0;
   const client = {
     query: async (sql: string) => {
+      if (sql.includes("pg_xact_commit_timestamp") && markerFails) throw error;
       if (sql.includes("pg_xact_commit_timestamp"))
         return { rows: [{ commit_epoch_ms: "1785924738120" }] };
       if (!sql.includes("event_store.append_v1")) return { rows: [] };
@@ -85,6 +90,14 @@ describe("PostgresEventStore append retries", () => {
     await expect(
       new PostgresEventStore(fake.pool).append(input()),
     ).rejects.toBe(error);
+    expect(fake.appendCalls()).toBe(1);
+  });
+
+  it("acknowledges the durable result when the post-commit marker is unavailable", async () => {
+    const fake = poolThatFails(new Error("marker connection lost"), 0, true);
+    const result = await new PostgresEventStore(fake.pool).append(input());
+    expect(result.currentRevision).toBe("1");
+    expect(result.commitEpochMs).toBeUndefined();
     expect(fake.appendCalls()).toBe(1);
   });
 });

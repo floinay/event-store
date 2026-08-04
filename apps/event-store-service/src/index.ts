@@ -335,6 +335,11 @@ export async function startServer(): Promise<grpc.Server> {
               "SELECT event_store.assert_cdc_delivery_ready($1)",
               [walBudget],
             );
+            const commitTimestamp = await pool.query<{
+              enabled: string;
+            }>("SELECT current_setting('track_commit_timestamp') AS enabled");
+            if (commitTimestamp.rows[0]?.enabled !== "on")
+              throw new Error("PostgreSQL commit timestamps are not enabled");
             if (connectUrl !== undefined) {
               const connector = await pool.query<{
                 cdc_connector_name: string;
@@ -430,14 +435,14 @@ export async function startServer(): Promise<grpc.Server> {
         const result = await appendStore.append(
           parseAppendRequest(call.request, producerService, trafficClass),
         );
-        // PostgresEventStore sampled this immediately after its append query
-        // completed; emit it before the gRPC acknowledgement is scheduled.
-        const commitMetadata = new grpc.Metadata();
-        commitMetadata.set(
-          "x-event-store-commit-epoch-ms",
-          result.commitEpochMs.toString(),
-        );
-        call.sendMetadata(commitMetadata);
+        if (result.commitEpochMs !== undefined) {
+          const commitMetadata = new grpc.Metadata();
+          commitMetadata.set(
+            "x-event-store-commit-epoch-ms",
+            result.commitEpochMs.toString(),
+          );
+          call.sendMetadata(commitMetadata);
+        }
         callback(null, {
           request_id: result.requestId,
           previous_revision: result.previousRevision,
