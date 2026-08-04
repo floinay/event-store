@@ -13,6 +13,8 @@ describe("production HA topology", () => {
       ]),
     );
     expect(postgres).toContain("instances: 3");
+    expect(postgres).toContain("bootstrap:");
+    expect(postgres).toContain("database: event_store");
     expect(postgres).toContain("minSyncReplicas: 1");
     expect(postgres).toContain("synchronizeLogicalDecoding: true");
     expect(postgres).toContain("synchronizeReplicas:");

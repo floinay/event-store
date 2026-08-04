@@ -5,11 +5,15 @@ PostgreSQL instances with one synchronous replica, synchronized logical slots,
 three dual-role KRaft Kafka nodes, three Connect workers, and three stateless
 Event Store replicas.
 
-Apply the cluster-role Job first, then this overlay, then the bootstrap Job:
+Apply the HA overlay, wait for the PostgreSQL primary, then provision roles and
+run CDC bootstrap. The role Job owns the database only after CNPG has created
+`event_store`:
 
 ```sh
-kubectl apply -f deploy/event-store/cluster-roles-job.yaml
 kubectl apply -k deploy/production
+kubectl wait --for=condition=Ready cluster/event-store-postgres --timeout=10m
+kubectl apply -f deploy/event-store/cluster-roles-job.yaml
+kubectl wait --for=condition=complete job/event-store-cluster-roles --timeout=5m
 kubectl apply -f deploy/event-store/bootstrap-job.yaml
 ```
 

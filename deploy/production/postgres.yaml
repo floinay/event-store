@@ -9,6 +9,9 @@ spec:
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4
   enableSuperuserAccess: false
+  bootstrap:
+    initdb:
+      database: event_store
   minSyncReplicas: 1
   maxSyncReplicas: 1
   postgresql:
