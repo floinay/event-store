@@ -82,29 +82,6 @@ export function assertNoDirectPii(
   }
 }
 
-/** Numeric JSON lexemes are not stable across PostgreSQL numeric and JS Number. */
-export function assertNoJsonNumbers(
-  value: unknown,
-  path = "$",
-  seen = new WeakSet<object>(),
-): void {
-  if (typeof value === "number")
-    throw new Error(
-      `JSON numbers are prohibited; use a decimal string: ${path}`,
-    );
-  if (value === null || typeof value !== "object") return;
-  if (seen.has(value)) return;
-  seen.add(value);
-  if (Array.isArray(value)) {
-    value.forEach((entry, index) =>
-      assertNoJsonNumbers(entry, `${path}[${index}]`, seen),
-    );
-    return;
-  }
-  for (const [key, nested] of Object.entries(value))
-    assertNoJsonNumbers(nested, `${path}.${key}`, seen);
-}
-
 /** Generates an RFC 9562 UUIDv7 for request and aggregate identifiers. */
 export function uuidv7(now = Date.now()): string {
   if (!Number.isSafeInteger(now) || now < 0 || now >= 2 ** 48)
@@ -125,7 +102,7 @@ export function canonicalJson(value: unknown): string {
   if (typeof value === "number") {
     if (!Number.isFinite(value))
       throw new TypeError("non-finite numbers are not valid JSON");
-    return JSON.stringify(value);
+    return canonicalNumber(value);
   }
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (typeof value === "object") {
@@ -140,4 +117,23 @@ export function canonicalJson(value: unknown): string {
       .join(",")}}`;
   }
   throw new TypeError("value is not JSON-serializable");
+}
+
+/** Expands JavaScript exponent notation to PostgreSQL's canonical JSON number form. */
+function canonicalNumber(value: number): string {
+  const text = JSON.stringify(value);
+  if (text === undefined)
+    throw new TypeError("number is not JSON-serializable");
+  const match = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/.exec(text);
+  if (match === null) return text;
+  const sign = match[1] ?? "";
+  const whole = match[2] ?? "";
+  const fraction = match[3] ?? "";
+  const exponentText = match[4] ?? "0";
+  const digits = `${whole}${fraction}`;
+  const decimal = whole.length + Number(exponentText);
+  if (decimal <= 0) return `${sign}0.${"0".repeat(-decimal)}${digits}`;
+  if (decimal >= digits.length)
+    return `${sign}${digits}${"0".repeat(decimal - digits.length)}`;
+  return `${sign}${digits.slice(0, decimal)}.${digits.slice(decimal)}`;
 }

@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
 import { PostgresEventStore } from "@event-store/postgres-store";
+import { canonicalJson } from "@event-store/contracts";
 import type { Pool } from "pg";
 
 const enabled = process.env.RUN_INTEGRATION === "true";
@@ -170,5 +171,47 @@ suite("append SQL contract", () => {
     expect(result.rows[0]?.event_envelope.context).toMatchObject({
       causationId: null,
     });
+  });
+
+  it("accepts JSON numbers and hashes their canonical PostgreSQL form", async () => {
+    const aggregateId = id();
+    const requestId = id();
+    const appended = await store.append({
+      producerService: "orders-command",
+      namespace: "orders",
+      aggregateType: "Order",
+      aggregateId,
+      requestId,
+      expectedRevision: { kind: "no_stream" },
+      context: {
+        requestId,
+        correlationId: id(),
+        causationId: null,
+        actor: { kind: "user", subjectRef: "usr_1" },
+      },
+      events: [
+        {
+          eventName: "order.created",
+          schemaVersion: 1,
+          occurredAt: "2026-08-04T10:12:18.120Z",
+          payload: { small: 1e-7, large: 1e21, price: 1.23 },
+        },
+      ],
+    });
+    const eventId = appended.events[0]?.eventId;
+    const envelope = await pool.query<{
+      event_envelope: Record<string, unknown>;
+      envelope_sha256: string;
+    }>(
+      "SELECT event_envelope,envelope_sha256 FROM event_store.events WHERE event_id=$1",
+      [eventId],
+    );
+    const row = envelope.rows[0];
+    expect(row).toBeDefined();
+    expect(row?.envelope_sha256).toBe(
+      createHash("sha256")
+        .update(canonicalJson(row?.event_envelope))
+        .digest("hex"),
+    );
   });
 });

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   assertNoDirectPii,
-  assertNoJsonNumbers,
   canonicalJson,
   partitionKey,
 } from "@event-store/contracts";
@@ -41,10 +40,10 @@ describe("event contracts", () => {
     expect(canonicalJson({ "😀": 2, "�": 1 })).toBe('{"�":1,"😀":2}');
   });
 
-  it("rejects numeric JSON values before canonical hashing", () => {
-    expect(() => assertNoJsonNumbers({ amount: 1.0 })).toThrow(
-      "decimal string",
+  it("canonicalizes numeric exponent notation for PostgreSQL JSON", () => {
+    expect(canonicalJson({ small: 1e-7, large: 1e21 })).toBe(
+      '{"large":1000000000000000000000,"small":0.0000001}',
     );
-    expect(() => assertNoJsonNumbers({ amount: "1.0" })).not.toThrow();
+    expect(() => canonicalJson(Number.POSITIVE_INFINITY)).toThrow("non-finite");
   });
 });

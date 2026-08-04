@@ -4,7 +4,6 @@ import {
   EventContextSchema,
   EventDraftSchema,
   assertNoDirectPii,
-  assertNoJsonNumbers,
   canonicalJson,
   StoredEventSchema,
   type EventContext,
@@ -75,8 +74,6 @@ export class PostgresEventStore {
     const context = EventContextSchema.parse(input.context);
     assertNoDirectPii(events);
     assertNoDirectPii(context);
-    assertNoJsonNumbers(events.map((event) => event.payload));
-    assertNoJsonNumbers(context);
     const expected =
       input.expectedRevision.kind === "no_stream"
         ? null
