@@ -279,6 +279,7 @@ suite("gRPC to CDC", () => {
         {
           env: {
             ...process.env,
+            NODE_ENV: "test",
             GRPC_LISTEN_ADDRESS: address,
             HTTP_LISTEN_ADDRESS: undefined,
             ...(crashPoint === undefined

@@ -317,7 +317,8 @@ export async function startServer(
   const processCrashPoint = process.env.EVENT_STORE_TEST_CRASH_POINT;
   const hitCrashBoundary = async (point: ServiceCrashPoint): Promise<void> => {
     await testHooks?.hit(point);
-    if (processCrashPoint === point) process.kill(process.pid, "SIGKILL");
+    if (process.env.NODE_ENV === "test" && processCrashPoint === point)
+      process.kill(process.pid, "SIGKILL");
   };
   const connectUrl = process.env.CONNECT_URL;
   const connectMetricsPort = process.env.CONNECT_METRICS_PORT;
