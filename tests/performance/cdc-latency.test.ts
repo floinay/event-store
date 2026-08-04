@@ -164,6 +164,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       const committed = new Map<string, number>();
       const observed = new Map<string, number>();
       const observedCount = new Map<string, number>();
+      const appendLatenciesMs: number[] = [];
       const kafka = new KafkaJS.Kafka({
         kafkaJS: { brokers: [stack.kafkaBroker()] },
       });
@@ -275,6 +276,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
               `append returned non-contiguous stream revisions: ${result.streamRevisions.join(",")}`,
             );
           stream.nextRevision += BigInt(batchSize);
+          appendLatenciesMs.push(result.appendLatencyMs);
           for (const eventId of result.eventIds)
             committed.set(eventId, result.commitEpochMs);
         } finally {
@@ -305,8 +307,22 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         mean:
           samples.reduce((total, sample) => total + sample, 0) / samples.length,
       };
+      const appendSamples = [...appendLatenciesMs].sort(
+        (left, right) => left - right,
+      );
+      const appendMetrics = {
+        samples: appendSamples.length,
+        p50: percentile(appendSamples, 0.5),
+        p95: percentile(appendSamples, 0.95),
+        p99: percentile(appendSamples, 0.99),
+      };
       console.info(`CDC latency metrics: ${JSON.stringify(metrics)}`);
+      console.info(`Append latency metrics: ${JSON.stringify(appendMetrics)}`);
       expect(metrics.samples).toBeGreaterThanOrEqual(sampleCount);
+      expect(appendMetrics.samples).toBeGreaterThanOrEqual(sampleCount);
+      expect(appendMetrics.p50).toBeLessThanOrEqual(15);
+      expect(appendMetrics.p95).toBeLessThanOrEqual(30);
+      expect(appendMetrics.p99).toBeLessThanOrEqual(50);
       expect(
         [...committed.keys()].every(
           (eventId) => observedCount.get(eventId) === 1,
@@ -377,8 +393,10 @@ function append(
   eventIds: string[];
   streamRevisions: string[];
   commitEpochMs: number;
+  appendLatencyMs: number;
 }> {
   return new Promise((resolve, reject) => {
+    const startedAt = performance.now();
     let commitEpochMs: number | undefined;
     const call = client.AppendToStream(
       {
@@ -436,6 +454,7 @@ function append(
           eventIds: eventIds as string[],
           streamRevisions: streamRevisions as string[],
           commitEpochMs,
+          appendLatencyMs: performance.now() - startedAt,
         });
       },
     );
