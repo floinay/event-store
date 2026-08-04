@@ -557,6 +557,14 @@ suite("append SQL contract", () => {
     ).rejects.toMatchObject({ code: "P0001" });
   });
 
+  it("restricts recovery CDC cutover to the CDC principal", async () => {
+    await expect(
+      pool.query<{ public_can_execute: boolean }>(
+        "SELECT has_function_privilege('public', 'event_store.activate_recovery_cdc_slot(text,text,bigint)', 'EXECUTE') AS public_can_execute",
+      ),
+    ).resolves.toMatchObject({ rows: [{ public_can_execute: false }] });
+  });
+
   it("rejects append admission for a non-failover CDC slot", async () => {
     const original = await pool.query<{ cdc_slot_name: string }>(
       "SELECT cdc_slot_name FROM event_store.runtime_config WHERE singleton",
