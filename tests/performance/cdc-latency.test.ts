@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { uuidv7 } from "@event-store/contracts";
 import { startServer } from "../../apps/event-store-service/dist/index.js";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
+import type { Pool } from "pg";
 
 const suite = process.env.RUN_LATENCY === "true" ? describe : describe.skip;
 const sampleCount = Number(process.env.LATENCY_SAMPLE_COUNT ?? 100);
@@ -29,8 +30,10 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
   const stack = new EventStoreStack();
   let server: grpc.Server;
   let client: AppendClient;
+  let database: Pool;
   beforeAll(async () => {
     await stack.start({ cdc: true });
+    database = await stack.pool();
     process.env.DATABASE_URL = stack.databaseUrl;
     process.env.PRODUCER_SERVICE = "latency-probe";
     process.env.CDC_WAL_BUDGET_BYTES = String(8 * 1024 ** 3);
@@ -56,6 +59,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
   afterAll(async () => {
     client?.close();
     await new Promise<void>((resolve) => server?.tryShutdown(() => resolve()));
+    await database?.end();
     await stack.stop();
   }, 60_000);
 
@@ -105,13 +109,26 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         eachMessage: async ({ message }) => {
           const event = JSON.parse(message.value?.toString() ?? "{}") as {
             context?: { requestId?: string };
+            recordedAt?: string;
           };
           if (event.context?.requestId === warmupRequestId) warmupObserved();
           else if (
             event.context?.requestId !== undefined &&
+            event.recordedAt !== undefined &&
             committed.has(event.context.requestId)
-          )
-            observed.set(event.context.requestId, performance.now());
+          ) {
+            const committedAt = Date.parse(event.recordedAt);
+            const observedAt = await database.query<{ now_ms: string }>(
+              "SELECT (extract(epoch FROM clock_timestamp()) * 1000)::text AS now_ms",
+            );
+            if (Number.isFinite(committedAt)) {
+              committed.set(event.context.requestId, committedAt);
+              observed.set(
+                event.context.requestId,
+                Number(observedAt.rows[0]?.now_ms),
+              );
+            }
+          }
           if (appendsFinished && allSamplesReceived(committed, observed)) {
             clearTimeout(deadline);
             received();
@@ -125,22 +142,13 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
     let index = 0;
     do {
       await Promise.all(
-        Array.from(
-          { length: concurrency },
-          async () => {
-            const requestId = uuidv7();
-            const aggregateId = uuidv7();
-            // Register before append so a very fast consumer cannot drop it.
-            committed.set(requestId, Number.NaN);
-            const committedAt = await append(
-              client,
-              requestId,
-              aggregateId,
-              String(index++),
-            );
-            committed.set(requestId, committedAt);
-          },
-        ),
+        Array.from({ length: concurrency }, async () => {
+          const requestId = uuidv7();
+          const aggregateId = uuidv7();
+          // Register before append so a very fast consumer cannot drop it.
+          committed.set(requestId, Number.NaN);
+          await append(client, requestId, aggregateId, String(index++));
+        }),
       );
     } while (committed.size < sampleCount || performance.now() < deadline);
     appendsFinished = true;
@@ -190,10 +198,8 @@ function append(
   requestId: string,
   aggregateId: string,
   index: string,
-): Promise<number> {
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    let committedAt: number | undefined;
-    let metadataError: Error | undefined;
     const call = client.AppendToStream(
       {
         request_id: requestId,
@@ -221,23 +227,9 @@ function append(
           reject(error);
           return;
         }
-        if (metadataError !== undefined) {
-          reject(metadataError);
-          return;
-        }
-        if (committedAt === undefined) {
-          reject(new Error("append acknowledgement omitted SQL commit span"));
-          return;
-        }
-        resolve(committedAt);
+        resolve();
       },
     );
-    call.once("metadata", (metadata) => {
-      const value = metadata.get("x-event-store-commit-monotonic-ms")[0];
-      const parsed = Number(value);
-      if (!Number.isFinite(parsed))
-        metadataError = new Error("invalid SQL commit monotonic span metadata");
-      else committedAt = parsed;
-    });
+    call.once("metadata", () => undefined);
   });
 }
