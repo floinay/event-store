@@ -123,6 +123,25 @@ suite("logical slot-loss recovery", () => {
       "SELECT pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
       [recoverySlot],
     );
+    const unsafeRecoverySlot = `event_store_unsafe_${uuidv7().replaceAll("-", "_").slice(0, 30)}`;
+    await pool.query(
+      "SELECT pg_create_logical_replication_slot($1, 'pgoutput')",
+      [unsafeRecoverySlot],
+    );
+    try {
+      await expect(
+        pool.query("SELECT event_store.assert_recovery_cdc_slot_ready($1)", [
+          unsafeRecoverySlot,
+        ]),
+      ).rejects.toMatchObject({ code: "P0001" });
+      await expect(
+        fetch(`${stack.connectUrl}/connectors/event-store-live/status`),
+      ).resolves.toMatchObject({ status: 200 });
+    } finally {
+      await pool.query("SELECT pg_drop_replication_slot($1)", [
+        unsafeRecoverySlot,
+      ]);
+    }
     const recoveryId = `loss-${uuidv7().replaceAll("-", "").slice(-12)}`;
     const recoveryConnector = await stack.createSnapshotRecoveryConnector(
       recoveryId,

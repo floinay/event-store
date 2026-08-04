@@ -561,6 +561,13 @@ export class RecoveryCutoverCoordinator {
     const oldConnectorName = current.rows[0]?.cdc_connector_name;
     if (oldSlotName === undefined || oldConnectorName === undefined)
       throw new Error("current CDC ownership is unavailable");
+    // Validate the database-owned failover invariant before retiring the old
+    // cursor. The activation function repeats this check inside its cutover
+    // transaction to cover races after this external preflight.
+    await this.pool.query(
+      "SELECT event_store.assert_recovery_cdc_slot_ready($1)",
+      [slotName],
+    );
     await Promise.all([
       this.assertConnectorDelivery(slotName, connectorName),
       this.assertConsumerGroup(verification),
