@@ -29,7 +29,18 @@ describe("gRPC error mapping", () => {
     expect(JSON.parse(error.details)).toMatchObject({
       code: "commit_outcome_unknown",
       requestId: "019fc9c9-84d4-754c-ba77-8a8a9d9c586a",
+      retriable: true,
     });
+  });
+
+  it("maps a direct PII validation failure to INVALID_ARGUMENT", () => {
+    expect(
+      errorFrom(
+        Object.assign(new Error("direct PII field is prohibited"), {
+          code: "22023",
+        }),
+      ).code,
+    ).toBe(grpc.status.INVALID_ARGUMENT);
   });
 
   it("maps a connection failure before dispatch to UNAVAILABLE", () => {

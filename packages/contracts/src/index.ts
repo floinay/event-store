@@ -77,7 +77,10 @@ export function assertNoDirectPii(
   }
   for (const [key, nested] of Object.entries(value)) {
     if (forbiddenPiiKey.test(key))
-      throw new Error(`direct PII field is prohibited: ${path}.${key}`);
+      throw Object.assign(
+        new Error(`direct PII field is prohibited: ${path}.${key}`),
+        { code: "22023" },
+      );
     assertNoDirectPii(nested, `${path}.${key}`, seen);
   }
 }

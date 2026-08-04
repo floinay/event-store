@@ -109,7 +109,9 @@ export function errorFrom(
   const detail = {
     code: machineCode,
     requestId,
-    retriable: code === grpc.status.UNAVAILABLE,
+    retriable:
+      code === grpc.status.UNAVAILABLE ||
+      machineCode === "commit_outcome_unknown",
     ...(actualRevision === undefined ? {} : { actualRevision }),
   };
   const result = Object.assign(new Error(JSON.stringify(detail)), {
