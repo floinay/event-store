@@ -583,6 +583,17 @@ EOF
     this.#connect = undefined;
   }
 
+  /**
+   * Terminates the worker without a graceful drain. This is deliberately a
+   * test-only primitive for validating WAL replay across a process crash.
+   */
+  async crashConnect(): Promise<void> {
+    if (this.#connect === undefined)
+      throw new Error("Connect is not running");
+    await this.#connect.stop({ timeout: 0 });
+    this.#connect = undefined;
+  }
+
   async restartConnect(): Promise<void> {
     await this.stopConnect();
     await this.startConnect();
