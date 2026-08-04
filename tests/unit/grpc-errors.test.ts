@@ -9,6 +9,15 @@ describe("gRPC error mapping", () => {
     );
   });
 
+  it.each(["22003", "22P02", "23514"])(
+    "maps PostgreSQL validation %s to INVALID_ARGUMENT",
+    (code) => {
+      expect(
+        errorFrom(Object.assign(new Error("invalid request"), { code })).code,
+      ).toBe(grpc.status.INVALID_ARGUMENT);
+    },
+  );
+
   it("maps append connection loss to commit_outcome_unknown", () => {
     const error = errorFrom(
       Object.assign(new Error("connection lost"), { code: "08006" }),

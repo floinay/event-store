@@ -64,7 +64,10 @@ export function errorFrom(
     error instanceof SyntaxError ||
     error instanceof RangeError ||
     sqlCode === "22023" ||
-    sqlCode === "22001"
+    sqlCode === "22001" ||
+    sqlCode === "22003" ||
+    sqlCode === "22P02" ||
+    sqlCode === "23514"
   )
     [code, machineCode] = [grpc.status.INVALID_ARGUMENT, "validation_failed"];
   else if (sqlCode === "40001")
