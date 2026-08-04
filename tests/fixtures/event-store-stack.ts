@@ -214,7 +214,7 @@ EOF
       this.#connectKafkaProxy = await this.#toxiproxy.createProxy({
         name: "connect-kafka",
         listen: "0.0.0.0:8667",
-        upstream: "kafka:29092",
+        upstream: "kafka:29094",
       });
       this.#consumerPostgresProxy = await this.#toxiproxy.createProxy({
         name: "consumer-postgres",
@@ -235,10 +235,10 @@ EOF
         KAFKA_PROCESS_ROLES: "broker,controller",
         KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093",
         KAFKA_LISTENERS:
-          "PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,EXTERNAL://0.0.0.0:9092",
-        KAFKA_ADVERTISED_LISTENERS: `PLAINTEXT://kafka:29092,EXTERNAL://localhost:${kafkaExternalPort}`,
+          "PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,CONNECT://kafka:29094,EXTERNAL://0.0.0.0:9092",
+        KAFKA_ADVERTISED_LISTENERS: `PLAINTEXT://kafka:29092,CONNECT://toxiproxy:8667,EXTERNAL://localhost:${kafkaExternalPort}`,
         KAFKA_LISTENER_SECURITY_PROTOCOL_MAP:
-          "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT",
+          "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,CONNECT:PLAINTEXT,EXTERNAL:PLAINTEXT",
         KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT",
         KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER",
         KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1",

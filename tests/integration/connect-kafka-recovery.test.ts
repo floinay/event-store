@@ -332,6 +332,14 @@ suite("Connect to Kafka network recovery", () => {
         ],
       });
       const abortedOffset = await rawRecord;
+      await expect(
+        Promise.race([
+          committedRecord.then(() => false),
+          new Promise<true>((resolve) =>
+            setTimeout(() => resolve(true), 1_000),
+          ),
+        ]),
+      ).resolves.toBe(true);
       await stack.crashConnect();
       await latency.remove();
       await stack.startConnect();
