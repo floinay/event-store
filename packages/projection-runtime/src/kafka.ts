@@ -104,7 +104,7 @@ export class KafkaProjectionRunner {
       rejectAssigned = reject;
     });
     const expectedOffsets = new Map<string, bigint>();
-    const resyncAttempts = new Set<string>();
+    const readCommittedGapAttempts = new Set<string>();
     const alignPartition = async (
       assignment: { topic: string; partition: number },
     ): Promise<bigint> => {
@@ -187,28 +187,37 @@ export class KafkaProjectionRunner {
           return;
         }
         if (record.offset > expected) {
-          const attempt = `${topic}/${partition}/${expected}`;
-          if (!resyncAttempts.has(attempt)) {
-            // Rebalance notifications are not exposed by this client API. On
-            // the first discontinuity, re-check retention and force the group
-            // back to the durable checkpoint before accepting any gap.
-            resyncAttempts.add(attempt);
+          const attempt = `${topic}/${partition}/${expected}/${record.offset}`;
+          if (!readCommittedGapAttempts.has(attempt)) {
+            const offsets = await admin.fetchTopicOffsets(topic, {
+              isolationLevel: KafkaJS.IsolationLevel.READ_COMMITTED,
+            });
+            const low = offsets.find((offset) => offset.partition === partition)
+              ?.low;
+            if (low === undefined || BigInt(low) > expected) {
+              pause();
+              throw new Error(
+                `projection Kafka gap is below the retained range for ${topic}/${partition}: expected ${expected}, low ${low ?? "unknown"}`,
+              );
+            }
+            // Seek to the durable physical offset once. If the same
+            // read_committed record is returned again, Kafka has proved that
+            // all intervening retained log entries are invisible transaction
+            // control or aborted records; a delete-only event topic cannot
+            // otherwise have a visible interior gap.
+            readCommittedGapAttempts.add(attempt);
             await alignPartition({ topic, partition });
             return;
           }
-          // The forced seek above proved that Kafka skipped only records hidden
-          // from a read_committed consumer (transaction-control/aborted data).
-          resyncAttempts.delete(attempt);
+          readCommittedGapAttempts.delete(attempt);
         }
         let failure: unknown;
         for (const delay of projectionRetryDelaysMs) {
           try {
-            // read_committed consumers do not receive Kafka transaction-control
-            // batches, so readable record offsets are not necessarily adjacent.
             await withHeartbeats(
               () =>
                 this.transactionRunner.process(record, this.apply, {
-                  allowReadCommittedOffsetGap: true,
+                  allowReadCommittedOffsetGap: record.offset > expected,
                 }),
               heartbeat,
             );

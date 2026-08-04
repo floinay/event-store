@@ -2,7 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { canonicalJson, uuidv7 } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
-import { ProjectionTransactionRunner } from "@event-store/projection-runtime";
+import {
+  ProjectionGapError,
+  ProjectionTransactionRunner,
+} from "@event-store/projection-runtime";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
 import type { Pool } from "pg";
 
@@ -114,6 +117,16 @@ suite("projection crash boundary", () => {
         )
       ).rows[0]?.count,
     ).toBe(1);
+    expect(
+      (
+        await pool.query(
+          "SELECT next_offset::text FROM projection_runtime.checkpoints",
+        )
+      ).rows[0]?.next_offset,
+    ).toBe("1");
+    await expect(
+      runner.process({ ...record, offset: 2n }, async () => undefined),
+    ).rejects.toBeInstanceOf(ProjectionGapError);
     expect(
       (
         await pool.query(
