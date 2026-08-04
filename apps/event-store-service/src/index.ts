@@ -122,7 +122,7 @@ export class CommitToConsumerLatencyHistogram {
 }
 
 interface CdcLatencyProbe {
-  up: () => boolean;
+  up: (timelineId?: number) => boolean;
   stop: () => Promise<void>;
 }
 
@@ -132,6 +132,7 @@ async function startCdcLatencyProbe(
   topic: string,
   intervalMs: number,
   histogram: CommitToConsumerLatencyHistogram,
+  currentTimeline: () => Promise<number>,
 ): Promise<CdcLatencyProbe> {
   if (!Number.isInteger(intervalMs) || intervalMs < 1_000)
     throw new Error(
@@ -147,9 +148,13 @@ async function startCdcLatencyProbe(
       allowAutoTopicCreation: false,
     },
   });
-  const pending = new Map<string, number>();
+  const pending = new Map<
+    string,
+    { commitEpochMs: number; timelineId: number }
+  >();
   let connected = false;
   let lastMeasurementEpochMs: number | undefined;
+  let lastMeasurementTimelineId: number | undefined;
   let lastFailureEpochMs: number | undefined;
   const staleAfterMs = intervalMs * 3;
   await consumer.connect();
@@ -164,21 +169,23 @@ async function startCdcLatencyProbe(
       const committedEpochMs = pending.get(eventId);
       if (committedEpochMs === undefined) return;
       pending.delete(eventId);
-      histogram.observe(receivedEpochMs - committedEpochMs);
+      histogram.observe(receivedEpochMs - committedEpochMs.commitEpochMs);
       lastMeasurementEpochMs = receivedEpochMs;
+      lastMeasurementTimelineId = committedEpochMs.timelineId;
       lastFailureEpochMs = undefined;
     },
   });
   connected = true;
   const publish = async (): Promise<void> => {
     const requestId = uuidv7();
+    const timelineId = await currentTimeline();
     const result = await store.appendCdcLatencyProbe(requestId);
     const eventId = result.events[0]?.eventId;
     if (eventId !== undefined && result.commitEpochMs !== undefined)
-      pending.set(eventId, result.commitEpochMs);
+      pending.set(eventId, { commitEpochMs: result.commitEpochMs, timelineId });
     const cutoff = Date.now() - 300_000;
     for (const [id, committedAt] of pending)
-      if (committedAt < cutoff) {
+      if (committedAt.commitEpochMs < cutoff) {
         pending.delete(id);
         lastFailureEpochMs = Date.now();
       }
@@ -192,9 +199,10 @@ async function startCdcLatencyProbe(
   timer.unref();
   publishSafely();
   return {
-    up: () =>
+    up: (timelineId) =>
       connected &&
       lastMeasurementEpochMs !== undefined &&
+      (timelineId === undefined || lastMeasurementTimelineId === timelineId) &&
       Date.now() - lastMeasurementEpochMs <= staleAfterMs &&
       lastFailureEpochMs === undefined,
     stop: async () => {
@@ -465,7 +473,16 @@ export async function startServer(
     throw new Error(
       "CDC_DELIVERY_HEALTH_CHECK_INTERVAL_MS must be an integer of at least 1000",
     );
-  const assertCdcDeliveryHealthy = async (): Promise<void> => {
+  const currentTimeline = async (): Promise<number> => {
+    const timeline = await pool.query<{ timeline_id: number }>(
+      "SELECT event_store.current_timeline_id() AS timeline_id",
+    );
+    const value = timeline.rows[0]?.timeline_id;
+    if (value === undefined || !Number.isInteger(value))
+      throw new Error("PostgreSQL timeline is unavailable");
+    return value;
+  };
+  const assertCdcDeliveryHealthy = async (): Promise<number> => {
     await pool.query("SELECT event_store.assert_cdc_delivery_ready($1)", [
       walBudget,
     ]);
@@ -513,13 +530,18 @@ export async function startServer(
     }
     if (kafkaBrokers !== undefined)
       await verifyKafkaReadiness(kafkaBrokers, kafkaTopic, kafkaMinIsr);
-    if (latencyProbe !== undefined && !latencyProbe.up())
+    const timelineId = await currentTimeline();
+    if (latencyProbe !== undefined && !latencyProbe.up(timelineId))
       throw new Error("CDC latency probe has not proved end-to-end delivery");
+    return timelineId;
   };
   const reconcileCdcDeliveryAdmission = async (): Promise<void> => {
     try {
-      await assertCdcDeliveryHealthy();
-      await pool.query("SELECT event_store.set_cdc_delivery_health(true)");
+      const timelineId = await assertCdcDeliveryHealthy();
+      await pool.query(
+        "SELECT event_store.set_cdc_delivery_health_on_timeline($1)",
+        [timelineId],
+      );
     } catch (error) {
       // This is durable and is checked inside append_v1, so existing gRPC
       // connections cannot continue writing after the next failed probe.
@@ -588,6 +610,9 @@ export async function startServer(
       health.once("error", reject).listen(port, host, resolve),
     );
   }
+  // Never inherit an old healthy flag across service restart or promotion.
+  // The monitor can reopen it only through a current-timeline proof.
+  await pool.query("SELECT event_store.set_cdc_delivery_health(false)");
   if (latencyProbeIntervalText !== undefined)
     latencyProbe = await startCdcLatencyProbe(
       store,
@@ -595,7 +620,9 @@ export async function startServer(
       kafkaTopic,
       Number(latencyProbeIntervalText),
       latencyHistogram,
+      currentTimeline,
     );
+  else await reconcileCdcDeliveryAdmission().catch(() => undefined);
   const protoPath =
     process.env.PROTO_PATH ??
     join(process.cwd(), "packages/contracts/proto/event_store.proto");

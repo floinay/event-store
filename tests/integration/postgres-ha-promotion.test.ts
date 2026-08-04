@@ -453,7 +453,7 @@ suite("PostgreSQL HA promotion", () => {
       const promotedAdmission = new Pool({ connectionString: standbyUrl });
       try {
         await promotedAdmission.query(
-          "SELECT event_store.set_cdc_delivery_health(true)",
+          "SELECT event_store.set_cdc_delivery_health_on_timeline(event_store.current_timeline_id())",
         );
       } finally {
         await promotedAdmission.end();
