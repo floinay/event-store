@@ -27,13 +27,20 @@ suite("PITR recovery", () => {
     const store = new PostgresEventStore(source);
     const aggregateId = uuidv7();
     const beforeRequestId = uuidv7();
-    await append(store, aggregateId, beforeRequestId, "before-target", "no_stream");
+    await append(
+      store,
+      aggregateId,
+      beforeRequestId,
+      "before-target",
+      "no_stream",
+    );
     const targetTime = (
       await source.query<{ target_time: string }>(
         "SELECT clock_timestamp()::text AS target_time",
       )
     ).rows[0]?.target_time;
-    if (targetTime === undefined) throw new Error("could not read PITR target time");
+    if (targetTime === undefined)
+      throw new Error("could not read PITR target time");
     await append(store, aggregateId, uuidv7(), "after-target", "exact");
 
     restored = await stack.restorePitr(backup, targetTime);
@@ -42,9 +49,9 @@ suite("PITR recovery", () => {
       const events = await restoredPool.query<{
         event_envelope: { payload: { marker: string } };
       }>("SELECT event_envelope FROM event_store.events ORDER BY event_number");
-      expect(events.rows.map((row) => row.event_envelope.payload.marker)).toEqual([
-        "before-target",
-      ]);
+      expect(
+        events.rows.map((row) => row.event_envelope.payload.marker),
+      ).toEqual(["before-target"]);
       const slot = `event_store_pitr_${uuidv7().replaceAll("-", "_")}`;
       await restoredPool.query(
         "SELECT * FROM pg_create_logical_replication_slot($1, 'pgoutput', false, false, true)",
@@ -71,10 +78,16 @@ suite("PITR recovery", () => {
       });
       const deliveries = new Map<string, number>();
       await consumer.connect();
-      await consumer.subscribe({ topics: ["event-store.events.v1"], replace: true });
+      await consumer.subscribe({
+        topics: ["event-store.events.v1"],
+        replace: true,
+      });
       const replayed = new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(
-          () => reject(new Error("restored CDC snapshot did not replay target events")),
+          () =>
+            reject(
+              new Error("restored CDC snapshot did not replay target events"),
+            ),
           60_000,
         );
         void consumer.run({
@@ -83,7 +96,10 @@ suite("PITR recovery", () => {
               eventId?: string;
             };
             if (event.eventId === undefined) return;
-            deliveries.set(event.eventId, (deliveries.get(event.eventId) ?? 0) + 1);
+            deliveries.set(
+              event.eventId,
+              (deliveries.get(event.eventId) ?? 0) + 1,
+            );
             if (
               restoredEventIds.rows.every(
                 ({ event_id }) => (deliveries.get(event_id) ?? 0) >= 2,
@@ -123,7 +139,9 @@ async function append(
     aggregateId,
     requestId,
     expectedRevision:
-      expected === "no_stream" ? { kind: "no_stream" } : { kind: "exact", revision: 1n },
+      expected === "no_stream"
+        ? { kind: "no_stream" }
+        : { kind: "exact", revision: 1n },
     context: {
       requestId,
       correlationId: uuidv7(),

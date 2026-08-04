@@ -216,28 +216,28 @@ suite("append SQL contract", () => {
     ])
       await expect(
         pool.query(
-        "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
-        [
-          "orders-command",
-          "orders",
-          "Order",
-          id(),
-          id(),
-          "no_stream",
-          null,
-          JSON.stringify([
-            {
-              eventName: "order.created",
-              schemaVersion: 1,
-              occurredAt: "2026-08-04T10:12:18.120Z",
-              payload: { [key]: "person@example.com" },
-            },
-          ]),
-          JSON.stringify({
-            correlationId: id(),
-            actor: { kind: "user", subjectRef: "usr_1" },
-          }),
-        ],
+          "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+          [
+            "orders-command",
+            "orders",
+            "Order",
+            id(),
+            id(),
+            "no_stream",
+            null,
+            JSON.stringify([
+              {
+                eventName: "order.created",
+                schemaVersion: 1,
+                occurredAt: "2026-08-04T10:12:18.120Z",
+                payload: { [key]: "person@example.com" },
+              },
+            ]),
+            JSON.stringify({
+              correlationId: id(),
+              actor: { kind: "user", subjectRef: "usr_1" },
+            }),
+          ],
         ),
       ).rejects.toMatchObject({ code: "22023" });
   });

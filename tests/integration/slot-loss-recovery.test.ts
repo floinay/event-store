@@ -41,7 +41,10 @@ suite("logical slot-loss recovery", () => {
       notify = resolve;
     });
     await consumer.connect();
-    await consumer.subscribe({ topics: ["event-store.events.v1"], replace: true });
+    await consumer.subscribe({
+      topics: ["event-store.events.v1"],
+      replace: true,
+    });
     await consumer.run({
       eachMessage: async ({ message }) => {
         const event = JSON.parse(message.value?.toString() ?? "{}") as {
@@ -69,7 +72,9 @@ suite("logical slot-loss recovery", () => {
       return slot.rows[0]?.active === false;
     });
     await pool.query("SELECT pg_drop_replication_slot('event_store_live')");
-    await expect(append(store, uuidv7(), "rejected-while-slot-missing")).rejects.toMatchObject({
+    await expect(
+      append(store, uuidv7(), "rejected-while-slot-missing"),
+    ).rejects.toMatchObject({
       code: "P0001",
     });
 
@@ -106,7 +111,9 @@ suite("logical slot-loss recovery", () => {
         "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
       ),
     ).resolves.toMatchObject({
-      rows: [{ cdc_slot_name: recoverySlot, cdc_connector_name: recoveryConnector }],
+      rows: [
+        { cdc_slot_name: recoverySlot, cdc_connector_name: recoveryConnector },
+      ],
     });
     await pool.query("SELECT event_store.enable_append_admission($1)", [
       (8n * 1024n ** 3n).toString(),
@@ -116,7 +123,9 @@ suite("logical slot-loss recovery", () => {
         "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
       ),
     ).resolves.toMatchObject({
-      rows: [{ cdc_slot_name: recoverySlot, cdc_connector_name: recoveryConnector }],
+      rows: [
+        { cdc_slot_name: recoverySlot, cdc_connector_name: recoveryConnector },
+      ],
     });
     await expect(
       fetch(`${stack.connectUrl}/connectors/${recoveryConnector}/status`),

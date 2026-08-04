@@ -1,4 +1,9 @@
-import { GenericContainer, Network, RandomPortGenerator, Wait } from "testcontainers";
+import {
+  GenericContainer,
+  Network,
+  RandomPortGenerator,
+  Wait,
+} from "testcontainers";
 import {
   ToxiProxyContainer,
   type CreatedProxy,
@@ -54,9 +59,15 @@ export class EventStoreStack {
       .withWaitStrategy(Wait.forSuccessfulCommand("true"))
       .start();
     try {
-      const createRestoreDirectory = await restored.exec(["mkdir", "-p", "/restore"]);
+      const createRestoreDirectory = await restored.exec([
+        "mkdir",
+        "-p",
+        "/restore",
+      ]);
       if (createRestoreDirectory.exitCode !== 0)
-        throw new Error(`could not prepare PITR directory: ${createRestoreDirectory.stderr}`);
+        throw new Error(
+          `could not prepare PITR directory: ${createRestoreDirectory.stderr}`,
+        );
       await restored.copyArchiveToContainer(
         await this.#postgres.copyArchiveFromContainer(backup.basePath),
         "/restore",
@@ -84,7 +95,9 @@ EOF
            > /tmp/restored-postgres.log 2>&1 &`,
       ]);
       if (configure.exitCode !== 0)
-        throw new Error(`could not configure restored PostgreSQL: ${configure.stderr}`);
+        throw new Error(
+          `could not configure restored PostgreSQL: ${configure.stderr}`,
+        );
       const databaseUrl = `postgresql://postgres:postgres@${restored.getHost()}:${restored.getMappedPort(5432)}/event_store`;
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
@@ -92,7 +105,10 @@ EOF
         try {
           await pool.query("SELECT pg_is_in_recovery()");
           await pool.end();
-          return { databaseUrl, stop: () => restored.stop().then(() => undefined) };
+          return {
+            databaseUrl,
+            stop: () => restored.stop().then(() => undefined),
+          };
         } catch {
           await pool.end().catch(() => undefined);
           await new Promise((resolve) => setTimeout(resolve, 250));
@@ -104,7 +120,6 @@ EOF
       throw error;
     }
   }
-
 
   get databaseUrl(): string {
     if (this.#postgres === undefined) throw new Error("stack is not started");
@@ -183,8 +198,7 @@ EOF
         KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093",
         KAFKA_LISTENERS:
           "PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,EXTERNAL://0.0.0.0:9092",
-        KAFKA_ADVERTISED_LISTENERS:
-          `PLAINTEXT://kafka:29092,EXTERNAL://localhost:${kafkaExternalPort}`,
+        KAFKA_ADVERTISED_LISTENERS: `PLAINTEXT://kafka:29092,EXTERNAL://localhost:${kafkaExternalPort}`,
         KAFKA_LISTENER_SECURITY_PROTOCOL_MAP:
           "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT",
         KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT",
@@ -201,9 +215,7 @@ EOF
       .start();
     const kafka = new KafkaJS.Kafka({
       kafkaJS: {
-        brokers: [
-          `${this.#kafka.getHost()}:${kafkaExternalPort}`,
-        ],
+        brokers: [`${this.#kafka.getHost()}:${kafkaExternalPort}`],
       },
     });
     const admin = kafka.admin();
@@ -350,58 +362,63 @@ EOF
     if (!/^event_store_[a-z0-9_]{1,50}$/.test(slotName))
       throw new Error("slotName must be an event_store logical slot");
     const name = `event-store-recovery-${recoveryId}`;
-    const response = await fetch(`${this.connectUrl}/connectors/${name}/config`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
-        "tasks.max": "1",
-        "database.hostname": databaseHostname,
-        "database.port": "5432",
-        "database.user": "event_store_cdc",
-        "database.password": "cdc",
-        "database.dbname": "event_store",
-        "topic.prefix": `event-store-recovery-${recoveryId}`,
-        "plugin.name": "pgoutput",
-        "publication.name": "event_store_events",
-        "publication.autocreate.mode": "disabled",
-        "slot.name": slotName,
-        "slot.drop.on.stop": "false",
-        "slot.failover": "true",
-        "schema.include.list": "event_store",
-        "table.include.list": "event_store.events",
-        "snapshot.mode": "initial",
-        "poll.interval.ms": "5",
-        "max.batch.size": "2048",
-        "max.queue.size": "8192",
-        "lsn.flush.mode": "connector",
-        "offset.mismatch.strategy": "trust_offset",
-        "exactly.once.support": "required",
-        "transaction.boundary": "poll",
-        "errors.tolerance": "none",
-        predicates: "isCanonicalEvents",
-        "predicates.isCanonicalEvents.type":
-          "org.apache.kafka.connect.transforms.predicates.TopicNameMatches",
-        "predicates.isCanonicalEvents.pattern":
-          `event-store-recovery-${recoveryId}\\.event_store\\.events`,
-        transforms: "outbox",
-        "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
-        "transforms.outbox.predicate": "isCanonicalEvents",
-        "transforms.outbox.table.field.event.id": "event_id",
-        "transforms.outbox.table.field.event.key": "partition_key",
-        "transforms.outbox.table.field.event.type": "event_name",
-        "transforms.outbox.table.field.event.payload": "event_envelope",
-        "transforms.outbox.route.by.field": "topic_route",
-        "transforms.outbox.route.topic.regex": "(.*)",
-        "transforms.outbox.route.topic.replacement": "$1.events.v1",
-        "transforms.outbox.table.expand.json.payload": "false",
-        "transforms.outbox.table.op.invalid.behavior": "fatal",
-        "transforms.outbox.table.fields.additional.placement":
-          "event_id:header:id,event_name:header:type,envelope_sha256:header:envelopeHash,namespace:header:namespace,aggregate_type:header:aggregateType,stream_revision:header:streamRevision",
-      }),
-    });
+    const response = await fetch(
+      `${this.connectUrl}/connectors/${name}/config`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          "connector.class":
+            "io.debezium.connector.postgresql.PostgresConnector",
+          "tasks.max": "1",
+          "database.hostname": databaseHostname,
+          "database.port": "5432",
+          "database.user": "event_store_cdc",
+          "database.password": "cdc",
+          "database.dbname": "event_store",
+          "topic.prefix": `event-store-recovery-${recoveryId}`,
+          "plugin.name": "pgoutput",
+          "publication.name": "event_store_events",
+          "publication.autocreate.mode": "disabled",
+          "slot.name": slotName,
+          "slot.drop.on.stop": "false",
+          "slot.failover": "true",
+          "schema.include.list": "event_store",
+          "table.include.list": "event_store.events",
+          "snapshot.mode": "initial",
+          "poll.interval.ms": "5",
+          "max.batch.size": "2048",
+          "max.queue.size": "8192",
+          "lsn.flush.mode": "connector",
+          "offset.mismatch.strategy": "trust_offset",
+          "exactly.once.support": "required",
+          "transaction.boundary": "poll",
+          "errors.tolerance": "none",
+          predicates: "isCanonicalEvents",
+          "predicates.isCanonicalEvents.type":
+            "org.apache.kafka.connect.transforms.predicates.TopicNameMatches",
+          "predicates.isCanonicalEvents.pattern": `event-store-recovery-${recoveryId}\\.event_store\\.events`,
+          transforms: "outbox",
+          "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+          "transforms.outbox.predicate": "isCanonicalEvents",
+          "transforms.outbox.table.field.event.id": "event_id",
+          "transforms.outbox.table.field.event.key": "partition_key",
+          "transforms.outbox.table.field.event.type": "event_name",
+          "transforms.outbox.table.field.event.payload": "event_envelope",
+          "transforms.outbox.route.by.field": "topic_route",
+          "transforms.outbox.route.topic.regex": "(.*)",
+          "transforms.outbox.route.topic.replacement": "$1.events.v1",
+          "transforms.outbox.table.expand.json.payload": "false",
+          "transforms.outbox.table.op.invalid.behavior": "fatal",
+          "transforms.outbox.table.fields.additional.placement":
+            "event_id:header:id,event_name:header:type,envelope_sha256:header:envelopeHash,namespace:header:namespace,aggregate_type:header:aggregateType,stream_revision:header:streamRevision",
+        }),
+      },
+    );
     if (!response.ok)
-      throw new Error(`recovery connector creation failed: ${await response.text()}`);
+      throw new Error(
+        `recovery connector creation failed: ${await response.text()}`,
+      );
     await this.waitForConnector(name);
     return name;
   }
@@ -417,7 +434,9 @@ EOF
   async waitForConnector(name: string): Promise<void> {
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
-      const response = await fetch(`${this.connectUrl}/connectors/${name}/status`);
+      const response = await fetch(
+        `${this.connectUrl}/connectors/${name}/status`,
+      );
       if (response.ok) {
         const status = (await response.json()) as {
           connector?: { state?: string };

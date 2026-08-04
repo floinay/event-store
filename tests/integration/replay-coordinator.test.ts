@@ -64,15 +64,12 @@ suite("replay coordinator", () => {
         "SELECT event_envelope FROM event_store.events WHERE event_id=$1",
         [barrier.eventId],
       );
-      await coordinator.recordBarrier(
-        identity,
-        {
-          topic: replayTopicName(identity.replayId),
-          partition: barrier.partition,
-          offset: barrier.partition,
-          value: JSON.stringify(row.rows[0]?.event_envelope),
-        },
-      );
+      await coordinator.recordBarrier(identity, {
+        topic: replayTopicName(identity.replayId),
+        partition: barrier.partition,
+        offset: barrier.partition,
+        value: JSON.stringify(row.rows[0]?.event_envelope),
+      });
     }
     await expect(
       coordinator.activate(identity, {

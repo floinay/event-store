@@ -90,7 +90,7 @@ async function verifyCdcReadiness(
     failover: boolean;
     invalidationReason: string | null;
   }>(
-    "SELECT true AS exists, active, failover, invalidation_reason AS \"invalidationReason\" FROM pg_replication_slots WHERE slot_name = $1",
+    'SELECT true AS exists, active, failover, invalidation_reason AS "invalidationReason" FROM pg_replication_slots WHERE slot_name = $1',
     [slotName],
   );
   const row = slot.rows[0];
@@ -167,7 +167,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   } finally {
     await database.end();
   }
-  const ownership = new Client({ connectionString: options.replicationDatabaseUrl });
+  const ownership = new Client({
+    connectionString: options.replicationDatabaseUrl,
+  });
   await ownership.connect();
   let cdcSlotName: string;
   let cdcConnectorName: string;
@@ -179,7 +181,8 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
       "SELECT cdc_slot_name,cdc_connector_name FROM event_store.runtime_config WHERE singleton",
     );
     cdcSlotName = runtime.rows[0]?.cdc_slot_name ?? "event_store_live";
-    cdcConnectorName = runtime.rows[0]?.cdc_connector_name ?? options.connectorName;
+    cdcConnectorName =
+      runtime.rows[0]?.cdc_connector_name ?? options.connectorName;
   } finally {
     await ownership.end();
   }
@@ -193,7 +196,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
       },
     );
     if (!response.ok)
-      throw new Error(`connector registration failed: ${await response.text()}`);
+      throw new Error(
+        `connector registration failed: ${await response.text()}`,
+      );
   }
   await waitForConnector(options.connectUrl, cdcConnectorName);
   const readinessDatabase = new Client({
@@ -204,9 +209,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     await verifyCdcReadiness(readinessDatabase, cdcSlotName);
     // Append admission is the final rollout step: the logical slot and the
     // selected connector have already proved that they are active.
-    await readinessDatabase.query("SELECT event_store.enable_append_admission($1)", [
-      options.walBudgetBytes.toString(),
-    ]);
+    await readinessDatabase.query(
+      "SELECT event_store.enable_append_admission($1)",
+      [options.walBudgetBytes.toString()],
+    );
   } finally {
     await readinessDatabase.end();
   }
