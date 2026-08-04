@@ -312,6 +312,7 @@ export async function startServer(
     appendConflictCount: 0,
     appendUnknownOutcomeCount: 0,
     appendDurationSeconds: 0,
+    dbCommitDurationSeconds: 0,
   };
   const connectUrl = process.env.CONNECT_URL;
   const connectMetricsPort = process.env.CONNECT_METRICS_PORT;
@@ -337,6 +338,7 @@ export async function startServer(
                     `event_store_append_conflicts_total ${metrics.appendConflictCount}\n` +
                     `event_store_append_unknown_outcomes_total ${metrics.appendUnknownOutcomeCount}\n` +
                     `event_store_append_duration_seconds_sum ${metrics.appendDurationSeconds}\n` +
+                    `event_store_db_commit_duration_seconds_sum ${metrics.dbCommitDurationSeconds}\n` +
                     `event_store_db_pool_total ${pool.totalCount}\n` +
                     `event_store_db_pool_idle ${pool.idleCount}\n` +
                     `event_store_db_pool_waiting ${pool.waitingCount}\n`,
@@ -452,9 +454,12 @@ export async function startServer(
             { code: grpc.status.PERMISSION_DENIED },
           );
         await testHooks?.hit("before_sql");
+        const databaseStarted = performance.now();
         const result = await appendStore.append(
           parseAppendRequest(call.request, producerService, trafficClass),
         );
+        metrics.dbCommitDurationSeconds +=
+          (performance.now() - databaseStarted) / 1_000;
         await testHooks?.hit("after_postgres_commit");
         if (result.commitEpochMs !== undefined) {
           const commitMetadata = new grpc.Metadata();

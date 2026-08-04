@@ -160,6 +160,7 @@ suite("gRPC to CDC", () => {
     expect(metrics).toContain("event_store_append_total");
     expect(metrics).toContain("event_store_append_conflicts_total");
     expect(metrics).toContain("event_store_append_unknown_outcomes_total");
+    expect(metrics).toContain("event_store_db_commit_duration_seconds_sum");
     expect(metrics).toContain("event_store_db_pool_waiting");
   });
 
