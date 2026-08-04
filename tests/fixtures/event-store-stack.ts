@@ -26,6 +26,7 @@ export class EventStoreStack {
   #connectUsesToxiproxy = false;
   #connectUsesKafkaProxy = false;
   #productionResources = false;
+  #walBudgetBytes = 8n * 1024n ** 3n;
 
   async createPitrBaseBackup(): Promise<{
     basePath: string;
@@ -152,8 +153,14 @@ EOF
       toxiproxy?: boolean;
       connectKafkaProxy?: boolean;
       productionResources?: boolean;
+      walBudgetBytes?: bigint;
     } = {},
   ): Promise<void> {
+    if (options.walBudgetBytes !== undefined && options.walBudgetBytes < 1n)
+      throw new TypeError("walBudgetBytes must be a positive bigint");
+    this.#walBudgetBytes = options.walBudgetBytes ?? 8n * 1024n ** 3n;
+    const walKeepSizeMb =
+      (this.#walBudgetBytes + 1024n ** 2n - 1n) / 1024n ** 2n;
     this.#productionResources = options.productionResources === true;
     this.#network = await new Network().start();
     this.#postgres = await new GenericContainer("postgres:18.4-bookworm")
@@ -171,7 +178,7 @@ EOF
         "-c",
         "max_wal_senders=10",
         "-c",
-        "max_slot_wal_keep_size=8GB",
+        `max_slot_wal_keep_size=${walKeepSizeMb}MB`,
         "-c",
         "synchronous_commit=on",
         "-c",
@@ -309,9 +316,9 @@ EOF
     await this.waitForLiveSlotActive();
     const admission = new Pool({ connectionString: this.databaseUrl });
     try {
-      await admission.query(
-        "SELECT event_store.enable_append_admission(8589934592)",
-      );
+      await admission.query("SELECT event_store.enable_append_admission($1)", [
+        this.#walBudgetBytes.toString(),
+      ]);
     } finally {
       await admission.end();
     }
