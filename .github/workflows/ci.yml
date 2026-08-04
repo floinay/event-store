@@ -37,7 +37,17 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24.18.0, cache: npm }
       - run: npm ci
-      - run: RUN_INTEGRATION=true RUN_STRESS=true npm test
+      - run: npm run build
+      - run: >-
+          RUN_INTEGRATION=true RUN_STRESS=true npx vitest run --no-file-parallelism
+          tests/sql-contract tests/integration tests/unit
+          --reporter=json --outputFile=pr-full.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr-full-results
+          path: pr-full.json
+          retention-days: 35
 
   stress:
     runs-on: ubuntu-24.04
