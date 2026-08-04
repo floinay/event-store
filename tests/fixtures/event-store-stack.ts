@@ -20,6 +20,7 @@ export class EventStoreStack {
   #connect?: Awaited<ReturnType<GenericContainer["start"]>>;
   #toxiproxy?: Awaited<ReturnType<ToxiProxyContainer["start"]>>;
   #postgresConnectProxy?: CreatedProxy;
+  #connectUsesToxiproxy = false;
 
   async createPitrBaseBackup(): Promise<{
     basePath: string;
@@ -257,6 +258,13 @@ EOF
       ],
     });
     await admin.disconnect();
+    await this.startConnect(options.toxiproxy === true);
+  }
+
+  async startConnect(viaToxiproxy = this.#connectUsesToxiproxy): Promise<void> {
+    if (this.#network === undefined)
+      throw new Error("CDC stack network is not started");
+    this.#connectUsesToxiproxy = viaToxiproxy;
     this.#connect = await new GenericContainer(
       "quay.io/debezium/connect:3.6.0.Final",
     )
@@ -279,7 +287,7 @@ EOF
       .withExposedPorts(8083)
       .withWaitStrategy(Wait.forHttp("/connector-plugins", 8083))
       .start();
-    await this.createConnector(options.toxiproxy === true);
+    await this.createConnector(viaToxiproxy);
   }
 
   async createConnector(viaToxiproxy = false): Promise<void> {
@@ -492,6 +500,11 @@ EOF
   async stopConnect(): Promise<void> {
     await this.#connect?.stop();
     this.#connect = undefined;
+  }
+
+  async restartConnect(): Promise<void> {
+    await this.stopConnect();
+    await this.startConnect();
   }
 
   async pool(): Promise<Pool> {

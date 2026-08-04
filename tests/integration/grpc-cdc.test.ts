@@ -154,6 +154,18 @@ suite("gRPC to CDC", () => {
   it("keeps a bounded durable append window after a Connect process crash", async () => {
     await stack.stopConnect();
     const pool = await stack.pool();
+    const directRequestId = uuidv7();
+    const grpcRequestId = uuidv7();
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [stack.kafkaBroker()] },
+    });
+    const consumer = kafka.consumer({
+      kafkaJS: {
+        groupId: `connect-crash-${uuidv7()}`,
+        autoCommit: false,
+        fromBeginning: true,
+      },
+    });
     try {
       const deadline = Date.now() + 30_000;
       while (Date.now() < deadline) {
@@ -168,6 +180,32 @@ suite("gRPC to CDC", () => {
       ).resolves.toMatchObject({
         status: 503,
       });
+      await consumer.connect();
+      await consumer.subscribe({
+        topics: ["event-store.events.v1"],
+        replace: true,
+      });
+      const delivered = new Promise<void>((resolve, reject) => {
+        const seen = new Set<string>();
+        const timeout = setTimeout(
+          () => reject(new Error("acknowledged events were not delivered after Connect restart")),
+          30_000,
+        );
+        void consumer.run({
+          eachMessage: async ({ message }) => {
+            const event = JSON.parse(message.value?.toString() ?? "{}") as {
+              context?: { requestId?: string };
+            };
+            const requestId = event.context?.requestId;
+            if (requestId === directRequestId || requestId === grpcRequestId)
+              seen.add(requestId);
+            if (seen.size === 2) {
+              clearTimeout(timeout);
+              resolve();
+            }
+          },
+        });
+      });
       const direct = await pool.connect();
       try {
         await direct.query("SET ROLE event_store_app");
@@ -179,7 +217,7 @@ suite("gRPC to CDC", () => {
               "orders",
               "Order",
               uuidv7(),
-              uuidv7(),
+              directRequestId,
               "no_stream",
               null,
               JSON.stringify([
@@ -202,10 +240,10 @@ suite("gRPC to CDC", () => {
         await direct.query("RESET ROLE").catch(() => undefined);
         direct.release();
       }
-      const error = await new Promise<grpc.ServiceError | null>((resolve) =>
+      const response = await new Promise<Record<string, unknown>>((resolve, reject) =>
         client.AppendToStream(
           {
-            request_id: uuidv7(),
+            request_id: grpcRequestId,
             namespace: "orders",
             aggregate_type: "Order",
             aggregate_id: uuidv7(),
@@ -225,12 +263,15 @@ suite("gRPC to CDC", () => {
               },
             ],
           },
-          (failure) => resolve(failure),
+          (error, value) =>
+            error === null ? resolve(value ?? {}) : reject(error),
         ),
       );
-      expect(error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
-      expect(error?.details).toContain("cdc_admission_closed");
+      expect(response).toBeDefined();
+      await stack.restartConnect();
+      await expect(delivered).resolves.toBeUndefined();
     } finally {
+      await consumer.disconnect().catch(() => undefined);
       await pool.end();
     }
   }, 60_000);
