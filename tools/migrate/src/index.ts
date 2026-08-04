@@ -49,8 +49,16 @@ export async function migrate(
         await readFile(join(migrationsDir, "001_roles.sql"), "utf8"),
       );
     if (includeClusterMigration) {
-      for (const [role, password] of rolePasswordsFromEnvironment())
-        await client.query(`ALTER ROLE ${role} PASSWORD $1`, [password]);
+      for (const [role, password] of rolePasswordsFromEnvironment()) {
+        // PostgreSQL utility statements do not accept bind parameters. Roles
+        // are constrained by the allow-list above; quote the password literal
+        // for the one remaining interpolated SQL value.
+        if (password.includes("\0"))
+          throw new Error("role password secret must not contain NUL");
+        await client.query(
+          `ALTER ROLE ${role} PASSWORD '${password.replaceAll("'", "''")}'`,
+        );
+      }
     }
     if (includeClusterMigration)
       await client.query(
