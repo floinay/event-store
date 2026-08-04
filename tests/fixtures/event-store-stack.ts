@@ -339,7 +339,10 @@ EOF
     }
   }
 
-  async startConnect(viaToxiproxy = this.#connectUsesToxiproxy): Promise<void> {
+  async startConnect(
+    viaToxiproxy = this.#connectUsesToxiproxy,
+    waitForConnector = true,
+  ): Promise<void> {
     if (this.#network === undefined)
       throw new Error("CDC stack network is not started");
     this.#connectUsesToxiproxy = viaToxiproxy;
@@ -381,10 +384,13 @@ EOF
       .withExposedPorts(8083)
       .withWaitStrategy(Wait.forHttp("/connector-plugins", 8083))
       .start();
-    await this.createConnector(viaToxiproxy);
+    await this.createConnector(viaToxiproxy, waitForConnector);
   }
 
-  async createConnector(viaToxiproxy = false): Promise<void> {
+  async createConnector(
+    viaToxiproxy = false,
+    waitForConnector = true,
+  ): Promise<void> {
     const response = await fetch(
       `${this.connectUrl}/connectors/event-store-live/config`,
       {
@@ -452,6 +458,7 @@ EOF
     );
     if (!response.ok)
       throw new Error(`connector creation failed: ${await response.text()}`);
+    if (!waitForConnector) return;
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       const status = await fetch(
