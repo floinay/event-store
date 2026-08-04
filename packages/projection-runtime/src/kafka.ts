@@ -293,29 +293,41 @@ export class KafkaProjectionRunner {
               failure,
               projectionRetryDelaysMs.length,
             );
-            await producer.send({
-              topic: this.dlqTopic,
-              messages: [
-                {
-                  key: `${this.transactionRunner.projectionIdentity.name}|${this.transactionRunner.projectionIdentity.generationId}|${topic}|${partition}|${message.offset}`,
-                  value: JSON.stringify({
-                    projectionName:
-                      this.transactionRunner.projectionIdentity.name,
-                    generationId:
-                      this.transactionRunner.projectionIdentity.generationId,
-                    topic,
-                    partition,
-                    offset: message.offset,
-                    error:
-                      failure instanceof Error
-                        ? failure.message
-                        : String(failure),
-                    envelope,
-                  }),
-                },
-              ],
-            });
-            await this.failureReporter.markDlqPublished(record);
+            let publishError: unknown;
+            for (const delay of projectionRetryDelaysMs) {
+              try {
+                await producer.send({
+                  topic: this.dlqTopic,
+                  messages: [
+                    {
+                      key: `${this.transactionRunner.projectionIdentity.name}|${this.transactionRunner.projectionIdentity.generationId}|${topic}|${partition}|${message.offset}`,
+                      value: JSON.stringify({
+                        projectionName:
+                          this.transactionRunner.projectionIdentity.name,
+                        generationId:
+                          this.transactionRunner.projectionIdentity
+                            .generationId,
+                        topic,
+                        partition,
+                        offset: message.offset,
+                        error:
+                          failure instanceof Error
+                            ? failure.message
+                            : String(failure),
+                        envelope,
+                      }),
+                    },
+                  ],
+                });
+                await this.failureReporter.markDlqPublished(record);
+                publishError = undefined;
+                break;
+              } catch (error) {
+                publishError = error;
+                await withHeartbeats(() => wait(delay), heartbeat);
+              }
+            }
+            if (publishError !== undefined) throw publishError;
           } finally {
             pause();
           }
