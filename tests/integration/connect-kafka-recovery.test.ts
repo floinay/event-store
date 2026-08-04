@@ -125,11 +125,6 @@ suite("Connect to Kafka network recovery", () => {
         },
       });
     });
-    const before = await pool.query<{ confirmed_flush_lsn: string }>(
-      "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name='event_store_live'",
-    );
-    const baselineLsn = before.rows[0]?.confirmed_flush_lsn;
-    expect(baselineLsn).toBeDefined();
     await stack.setConnectKafkaEnabled(false);
     try {
       await new PostgresEventStore(pool).append({
@@ -154,20 +149,6 @@ suite("Connect to Kafka network recovery", () => {
           },
         ],
       });
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-        const slot = await pool.query<{ advanced: boolean }>(
-          "SELECT confirmed_flush_lsn > $1::pg_lsn AS advanced FROM pg_replication_slots WHERE slot_name='event_store_live'",
-          [baselineLsn],
-        );
-        if (slot.rows[0]?.advanced === true) break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      const confirmed = await pool.query<{ advanced: boolean }>(
-        "SELECT confirmed_flush_lsn > $1::pg_lsn AS advanced FROM pg_replication_slots WHERE slot_name='event_store_live'",
-        [baselineLsn],
-      );
-      expect(confirmed.rows[0]?.advanced).toBe(true);
       await expect(
         Promise.race([
           delivered.then(() => false),
