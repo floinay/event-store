@@ -5,7 +5,7 @@ services:
     image: postgres:18.4-bookworm
     networks:
       default:
-        aliases: [postgres-primary]
+        aliases: [event-store-postgres-rw]
     command:
       [
         "postgres",

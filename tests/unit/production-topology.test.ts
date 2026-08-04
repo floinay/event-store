@@ -3,10 +3,14 @@ import { describe, expect, it } from "vitest";
 
 describe("production HA topology", () => {
   it("requires synchronous PostgreSQL, synchronized logical slots, and three runtime members", async () => {
-    const [postgres, kafka, runtime, preflight] = await Promise.all(
+    const [postgres, kafka, runtime, preflight, bootstrap, connector] = await Promise.all(
       ["postgres.yaml", "kafka.yaml", "runtime.yaml"].map((file) =>
         readFile(`deploy/production/${file}`, "utf8"),
-      ).concat(readFile("deploy/event-store/failover-preflight-job.yaml", "utf8")),
+      ).concat([
+        readFile("deploy/event-store/failover-preflight-job.yaml", "utf8"),
+        readFile("deploy/event-store/bootstrap-job.yaml", "utf8"),
+        readFile("deploy/connector/event-store-live.json", "utf8"),
+      ]),
     );
     expect(postgres).toContain("instances: 3");
     expect(postgres).toContain("minSyncReplicas: 1");
@@ -18,5 +22,8 @@ describe("production HA topology", () => {
     expect(runtime.match(/replicas: 3/g)).toHaveLength(2);
     expect(runtime).toContain("EXACTLY_ONCE_SOURCE_SUPPORT");
     expect(preflight).toContain("assert_failover_candidate('event_store_live')");
+    expect(bootstrap).toContain("event-store-kafka-kafka-bootstrap:9092");
+    expect(bootstrap).toContain("http://event-store-connect:8083");
+    expect(connector).toContain('"database.hostname": "event-store-postgres-rw"');
   });
 });

@@ -18,9 +18,9 @@ spec:
               valueFrom:
                 secretKeyRef: { name: event-store-cdc, key: database-url }
             - name: KAFKA_BROKERS
-              value: kafka-1:9092,kafka-2:9092,kafka-3:9092
+              value: event-store-kafka-kafka-bootstrap:9092
             - name: CONNECT_URL
-              value: http://connect:8083
+              value: http://event-store-connect:8083
             - name: CDC_WAL_BUDGET_BYTES
               value: "8589934592"
             - name: CONNECTOR_CONFIG_PATH
