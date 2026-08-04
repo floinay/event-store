@@ -165,6 +165,8 @@ export class ProjectionMetrics {
   private poisonEvents = 0;
   private pausedPartitions = 0;
   private checkpointAgeSeconds = 0;
+  private consumerRecordLag = 0;
+  private consumerEventAgeSeconds = 0;
 
   observeHandler(milliseconds: number): void {
     if (!Number.isFinite(milliseconds) || milliseconds < 0) return;
@@ -200,6 +202,17 @@ export class ProjectionMetrics {
     this.checkpointAgeSeconds = Math.max(0, (Date.now() - epoch) / 1_000);
   }
 
+  observeConsumerRecordLag(records: bigint): void {
+    if (records < 0n) return;
+    this.consumerRecordLag = Number(records);
+  }
+
+  observeConsumerEventAge(recordedAt: string): void {
+    const epoch = Date.parse(recordedAt);
+    if (!Number.isFinite(epoch)) return;
+    this.consumerEventAgeSeconds = Math.max(0, (Date.now() - epoch) / 1_000);
+  }
+
   prometheus(): string {
     return (
       `event_store_projection_handler_duration_seconds_sum ${this.handlerSeconds}\n` +
@@ -210,7 +223,9 @@ export class ProjectionMetrics {
       `event_store_projection_gap_incidents_total ${this.gapIncidents}\n` +
       `event_store_projection_poison_events_total ${this.poisonEvents}\n` +
       `event_store_projection_paused_partitions ${this.pausedPartitions}\n` +
-      `event_store_projection_checkpoint_age_seconds ${this.checkpointAgeSeconds}\n`
+      `event_store_projection_checkpoint_age_seconds ${this.checkpointAgeSeconds}\n` +
+      `event_store_projection_consumer_record_lag ${this.consumerRecordLag}\n` +
+      `event_store_projection_consumer_event_age_seconds ${this.consumerEventAgeSeconds}\n`
     );
   }
 }

@@ -44,6 +44,8 @@ describe("projection event transformer", () => {
     metrics.poisonEvent();
     metrics.pausePartition();
     metrics.observeCheckpointAge(new Date(Date.now() - 1_000).toISOString());
+    metrics.observeConsumerRecordLag(3n);
+    metrics.observeConsumerEventAge(new Date(Date.now() - 1_000).toISOString());
     const output = metrics.prometheus();
     expect(output).toContain(
       "event_store_projection_handler_duration_seconds_count 1",
@@ -52,6 +54,7 @@ describe("projection event transformer", () => {
     expect(output).toContain("event_store_projection_gap_incidents_total 1");
     expect(output).toContain("event_store_projection_poison_events_total 1");
     expect(output).toContain("event_store_projection_paused_partitions 1");
+    expect(output).toContain("event_store_projection_consumer_record_lag 3");
   });
 
   it("identifies the reserved CDC latency probe as a handler-free record", () => {

@@ -216,6 +216,19 @@ export class KafkaProjectionRunner {
             headers,
             value: message.value ?? Buffer.alloc(0),
           };
+          this.metrics?.observeConsumerRecordLag(
+            BigInt(batch.highWatermark) - record.offset,
+          );
+          const envelope = rawEnvelope(message.value);
+          if (
+            envelope !== null &&
+            typeof envelope === "object" &&
+            typeof (envelope as { recordedAt?: unknown }).recordedAt ===
+              "string"
+          )
+            this.metrics?.observeConsumerEventAge(
+              (envelope as { recordedAt: string }).recordedAt,
+            );
           if (expectedOffsets.get(`${topic}/${partition}`) === undefined)
             await alignAssignment();
           const persistedOffset = await this.checkpointStore.nextOffset(
