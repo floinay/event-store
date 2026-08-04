@@ -152,6 +152,7 @@ async function startCdcLatencyProbe(
     string,
     { commitEpochMs: number; timelineId: number }
   >();
+  const earlyProbeReceipts = new Map<string, number>();
   let connected = false;
   let lastMeasurementEpochMs: number | undefined;
   let lastMeasurementTimelineId: number | undefined;
@@ -167,9 +168,17 @@ async function startCdcLatencyProbe(
       const eventId = (Array.isArray(id) ? id[0] : id)?.toString();
       if (eventId === undefined) return;
       const committedEpochMs = pending.get(eventId);
-      if (committedEpochMs === undefined) return;
+      if (committedEpochMs === undefined) {
+        const type = message.headers?.type;
+        const eventType = (Array.isArray(type) ? type[0] : type)?.toString();
+        if (eventType === "system.cdc.latency.probe")
+          earlyProbeReceipts.set(eventId, receivedEpochMs);
+        return;
+      }
       pending.delete(eventId);
-      histogram.observe(receivedEpochMs - committedEpochMs.commitEpochMs);
+      histogram.observe(
+        Math.max(0, receivedEpochMs - committedEpochMs.commitEpochMs),
+      );
       lastMeasurementEpochMs = receivedEpochMs;
       lastMeasurementTimelineId = committedEpochMs.timelineId;
       lastFailureEpochMs = undefined;
@@ -181,14 +190,26 @@ async function startCdcLatencyProbe(
     const timelineId = await currentTimeline();
     const result = await store.appendCdcLatencyProbe(requestId);
     const eventId = result.events[0]?.eventId;
-    if (eventId !== undefined && result.commitEpochMs !== undefined)
+    if (eventId !== undefined && result.commitEpochMs !== undefined) {
       pending.set(eventId, { commitEpochMs: result.commitEpochMs, timelineId });
+      const receivedEpochMs = earlyProbeReceipts.get(eventId);
+      if (receivedEpochMs !== undefined) {
+        earlyProbeReceipts.delete(eventId);
+        pending.delete(eventId);
+        histogram.observe(Math.max(0, receivedEpochMs - result.commitEpochMs));
+        lastMeasurementEpochMs = receivedEpochMs;
+        lastMeasurementTimelineId = timelineId;
+        lastFailureEpochMs = undefined;
+      }
+    }
     const cutoff = Date.now() - 300_000;
     for (const [id, committedAt] of pending)
       if (committedAt.commitEpochMs < cutoff) {
         pending.delete(id);
         lastFailureEpochMs = Date.now();
       }
+    for (const [id, receivedAt] of earlyProbeReceipts)
+      if (receivedAt < cutoff) earlyProbeReceipts.delete(id);
   };
   const publishSafely = (): void => {
     void publish().catch(() => {
