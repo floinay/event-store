@@ -1,4 +1,4 @@
-import { GenericContainer, Network, Wait } from "testcontainers";
+import { GenericContainer, Network, RandomPortGenerator, Wait } from "testcontainers";
 import {
   ToxiProxyContainer,
   type CreatedProxy,
@@ -78,6 +78,7 @@ export class EventStoreStack {
       "SELECT pg_create_logical_replication_slot('event_store_live', 'pgoutput', false, false, true)",
     );
     await database.end();
+    const kafkaExternalPort = await new RandomPortGenerator().generatePort();
     this.#kafka = await new GenericContainer("apache/kafka:4.3.1")
       .withEnvironment({
         KAFKA_NODE_ID: "1",
@@ -86,7 +87,7 @@ export class EventStoreStack {
         KAFKA_LISTENERS:
           "PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,EXTERNAL://0.0.0.0:9092",
         KAFKA_ADVERTISED_LISTENERS:
-          "PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092",
+          `PLAINTEXT://kafka:29092,EXTERNAL://localhost:${kafkaExternalPort}`,
         KAFKA_LISTENER_SECURITY_PROTOCOL_MAP:
           "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT",
         KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT",
@@ -98,11 +99,15 @@ export class EventStoreStack {
       })
       .withNetwork(this.#network)
       .withNetworkAliases("kafka")
-      .withExposedPorts(9092)
+      .withExposedPorts({ container: 9092, host: kafkaExternalPort })
       .withWaitStrategy(Wait.forLogMessage(/Kafka Server started/))
       .start();
     const kafka = new KafkaJS.Kafka({
-      kafkaJS: { brokers: [`${this.#kafka.getHost()}:9092`] },
+      kafkaJS: {
+        brokers: [
+          `${this.#kafka.getHost()}:${kafkaExternalPort}`,
+        ],
+      },
     });
     const admin = kafka.admin();
     await admin.connect();
