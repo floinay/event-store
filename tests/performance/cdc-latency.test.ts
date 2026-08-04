@@ -80,6 +80,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         groupId: `latency-${uuidv7()}`,
         autoCommit: false,
         fromBeginning: true,
+        readUncommitted: false,
       },
     });
     await consumer.connect();
