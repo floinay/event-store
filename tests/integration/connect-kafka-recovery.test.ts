@@ -240,4 +240,107 @@ suite("Connect to Kafka network recovery", () => {
     await expect(delivered).resolves.toBeUndefined();
     await consumer.disconnect();
   }, 90_000);
+
+  it("hides an aborted Connect transaction from read_committed before replay", async () => {
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: { brokers: [stack.kafkaBroker()] },
+    });
+    const requestId = uuidv7();
+    const raw = kafka.consumer({
+      kafkaJS: {
+        groupId: `connect-eos-raw-${uuidv7()}`,
+        autoCommit: false,
+        fromBeginning: true,
+        readUncommitted: true,
+      },
+    });
+    const committed = kafka.consumer({
+      kafkaJS: {
+        groupId: `connect-eos-committed-${uuidv7()}`,
+        autoCommit: false,
+        fromBeginning: true,
+        readUncommitted: false,
+      },
+    });
+    await Promise.all([raw.connect(), committed.connect()]);
+    await Promise.all(
+      [raw, committed].map((consumer) =>
+        consumer.subscribe({
+          topics: ["event-store.events.v1"],
+          replace: true,
+        }),
+      ),
+    );
+    let rawSeen!: (offset: bigint) => void;
+    const rawRecord = new Promise<bigint>((resolve, reject) => {
+      rawSeen = resolve;
+      setTimeout(
+        () =>
+          reject(new Error("read_uncommitted did not observe Connect record")),
+        30_000,
+      );
+    });
+    let committedSeen!: (offset: bigint) => void;
+    const committedRecord = new Promise<bigint>((resolve, reject) => {
+      committedSeen = resolve;
+      setTimeout(
+        () =>
+          reject(new Error("read_committed did not receive replayed record")),
+        60_000,
+      );
+    });
+    await raw.run({
+      eachMessage: async ({ message }) => {
+        const event = JSON.parse(message.value?.toString() ?? "{}") as {
+          context?: { requestId?: string };
+        };
+        if (event.context?.requestId === requestId)
+          rawSeen(BigInt(message.offset));
+      },
+    });
+    await committed.run({
+      eachMessage: async ({ message }) => {
+        const event = JSON.parse(message.value?.toString() ?? "{}") as {
+          context?: { requestId?: string };
+        };
+        if (event.context?.requestId === requestId)
+          committedSeen(BigInt(message.offset));
+      },
+    });
+    const latency = await stack.addConnectKafkaLatency(10_000);
+    try {
+      await new PostgresEventStore(pool).append({
+        producerService: "orders-command",
+        namespace: "orders",
+        aggregateType: "Order",
+        aggregateId: uuidv7(),
+        requestId,
+        expectedRevision: { kind: "no_stream" },
+        context: {
+          requestId,
+          correlationId: uuidv7(),
+          causationId: null,
+          actor: { kind: "user", subjectRef: "usr_eos" },
+        },
+        events: [
+          {
+            eventName: "order.created",
+            schemaVersion: 1,
+            occurredAt: "2026-08-04T10:12:18.120Z",
+            payload: { orderRef: "connect-eos-abort" },
+          },
+        ],
+      });
+      const abortedOffset = await rawRecord;
+      await stack.crashConnect();
+      await latency.remove();
+      await stack.startConnect();
+      const replayedOffset = await committedRecord;
+      expect(replayedOffset).toBeGreaterThan(abortedOffset);
+    } finally {
+      await latency.remove().catch(() => undefined);
+      await raw.disconnect().catch(() => undefined);
+      await committed.disconnect().catch(() => undefined);
+    }
+  }, 120_000);
 });
