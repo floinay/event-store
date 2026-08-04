@@ -533,6 +533,7 @@ export function replayConnectorConfig(
     "schema.include.list": "event_store",
     "table.include.list": "event_store.events",
     "snapshot.mode": "initial",
+    "time.precision.mode": "connect",
     "snapshot.select.statement.overrides": "event_store.events",
     "snapshot.select.statement.overrides.event_store.events":
       "SELECT * FROM event_store.events ORDER BY event_number",
@@ -542,6 +543,7 @@ export function replayConnectorConfig(
     "transforms.outbox.table.field.event.key": "partition_key",
     "transforms.outbox.table.field.event.type": "event_name",
     "transforms.outbox.table.field.event.payload": "event_envelope",
+    "transforms.outbox.table.field.event.timestamp": "recorded_at_kafka",
     "transforms.outbox.route.by.field": "topic_route",
     "transforms.outbox.route.topic.replacement": replayTopicName(replayId),
     "transforms.outbox.table.expand.json.payload": "false",

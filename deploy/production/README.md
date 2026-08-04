@@ -17,6 +17,12 @@ kubectl wait --for=condition=complete job/event-store-cluster-roles --timeout=5m
 kubectl apply -f deploy/event-store/bootstrap-job.yaml
 ```
 
+`recorded_at` is the authoritative UTC event time. `recorded_at_kafka` is a
+derived UTC `timestamp without time zone` used only by Debezium's EventRouter:
+with `time.precision.mode=connect`, it supplies the Kafka record timestamp.
+The payload uses `StringConverter` with `expand.json.payload=false`, preserving
+the canonical JSON bytes rather than reserializing the envelope.
+
 Before promoting a PostgreSQL standby, run
 `SELECT event_store.assert_failover_candidate('event_store_live')` on that
 candidate. Promotion is prohibited unless the slot is present, failover-enabled,

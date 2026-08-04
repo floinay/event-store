@@ -41,6 +41,7 @@ suite("Debezium CDC", () => {
     const received = new Promise<{
       key: string;
       value: string;
+      timestamp: string;
       headers: Record<string, string>;
     }>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -60,6 +61,7 @@ suite("Debezium CDC", () => {
           resolve({
             key: message.key?.toString() ?? "",
             value: message.value?.toString() ?? "",
+            timestamp: message.timestamp,
             headers: Object.fromEntries(
               Object.entries(message.headers ?? {}).map(([key, value]) => [
                 key,
@@ -124,6 +126,14 @@ suite("Debezium CDC", () => {
     expect(event.headers.envelopeHash).toBe(
       createHash("sha256").update(canonicalJson(envelope)).digest("hex"),
     );
+    expect(
+      (
+        await pool.query<{ recorded_at_epoch_ms: string }>(
+          "SELECT floor(extract(epoch FROM recorded_at) * 1000)::text AS recorded_at_epoch_ms FROM event_store.events WHERE event_id=$1",
+          [envelope.eventId],
+        )
+      ).rows[0]?.recorded_at_epoch_ms,
+    ).toBe(event.timestamp);
   }, 60_000);
 
   it("delivers every batch event in revision order and loses none of 100 parallel streams", async () => {

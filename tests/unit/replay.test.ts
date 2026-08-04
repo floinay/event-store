@@ -16,6 +16,8 @@ describe("replay connector", () => {
       "transforms.outbox.table.field.event.key": "partition_key",
       "transforms.outbox.table.field.event.type": "event_name",
       "transforms.outbox.table.field.event.payload": "event_envelope",
+      "transforms.outbox.table.field.event.timestamp": "recorded_at_kafka",
+      "time.precision.mode": "connect",
       "transforms.outbox.table.expand.json.payload": "false",
       "transforms.outbox.route.topic.replacement":
         "event-store.replay.aug-2026.v1",
@@ -36,7 +38,7 @@ describe("live Connect worker", () => {
   it("keeps the canonical envelope as an unquoted JSON record", async () => {
     const worker = await readFile("deploy/connect/worker.properties", "utf8");
     expect(worker).toContain(
-      "value.converter=org.apache.kafka.connect.json.JsonConverter",
+      "value.converter=org.apache.kafka.connect.storage.StringConverter",
     );
   });
 
@@ -49,5 +51,9 @@ describe("live Connect worker", () => {
     expect(placement).toContain("event_id:header:id");
     expect(placement).toContain("event_name:header:type");
     expect(placement).toContain("envelope_sha256:header:envelopeHash");
+    expect(
+      connector.config["transforms.outbox.table.field.event.timestamp"],
+    ).toBe("recorded_at_kafka");
+    expect(connector.config["time.precision.mode"]).toBe("connect");
   });
 });
