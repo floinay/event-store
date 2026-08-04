@@ -6,7 +6,7 @@ import type {
   ProjectionHandler,
   ProjectionTransactionRunner,
 } from "./index.js";
-import { projectionRetryDelaysMs } from "./index.js";
+import { ProjectionCrashError, projectionRetryDelaysMs } from "./index.js";
 
 export interface KafkaProjectionConfig {
   brokers: string[];
@@ -254,6 +254,7 @@ export class KafkaProjectionRunner {
                 heartbeat,
               );
             } catch (error) {
+              if (error instanceof ProjectionCrashError) throw error;
               failure = error;
               await withHeartbeats(() => wait(delay), heartbeat);
               continue;
@@ -277,6 +278,8 @@ export class KafkaProjectionRunner {
                 await this.crashBarrier?.hit("after_kafka_offset_commit");
                 continue messageLoop;
               } catch (commitError) {
+                if (commitError instanceof ProjectionCrashError)
+                  throw commitError;
                 failure = commitError;
                 await withHeartbeats(() => wait(commitDelay), heartbeat);
               }

@@ -133,6 +133,8 @@ export class ProjectionRetentionError extends Error {
 export class ProjectionHandlerTimeoutError extends Error {
   readonly code = "projection_handler_timeout";
 }
+/** A test-only process termination marker that must never be retried in-process. */
+export class ProjectionCrashError extends Error {}
 
 export const projectionRetryDelaysMs = [
   100, 250, 500, 1_000, 2_000, 5_000, 10_000, 30_000,
