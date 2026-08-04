@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:http";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { Pool } from "pg";
@@ -197,6 +198,67 @@ export async function startServer(): Promise<grpc.Server> {
   )
     throw new Error("CDC_WAL_BUDGET_BYTES must be a positive integer");
   const store = new PostgresEventStore(pool, BigInt(walBudget));
+  const metrics = {
+    appendCount: 0,
+    appendFailureCount: 0,
+    appendDurationSeconds: 0,
+  };
+  const connectUrl = process.env.CONNECT_URL;
+  const healthAddress = process.env.HTTP_LISTEN_ADDRESS;
+  const health =
+    healthAddress === undefined
+      ? undefined
+      : createServer((request, response) => {
+          void (async () => {
+            if (request.url === "/livez") {
+              response.writeHead(200).end("ok\n");
+              return;
+            }
+            if (request.url === "/metrics") {
+              response
+                .writeHead(200, { "content-type": "text/plain; version=0.0.4" })
+                .end(
+                  `event_store_append_total ${metrics.appendCount}\n` +
+                    `event_store_append_failures_total ${metrics.appendFailureCount}\n` +
+                    `event_store_append_duration_seconds_sum ${metrics.appendDurationSeconds}\n`,
+                );
+              return;
+            }
+            if (request.url !== "/readyz") {
+              response.writeHead(404).end();
+              return;
+            }
+            await pool.query("SELECT event_store.assert_append_cdc_ready($1)", [
+              walBudget,
+            ]);
+            if (connectUrl !== undefined) {
+              const status = await fetch(
+                `${connectUrl}/connectors/event-store-live/status`,
+              );
+              const body = (await status.json()) as {
+                connector?: { state?: string };
+                tasks?: { state?: string }[];
+              };
+              if (
+                !status.ok ||
+                body.connector?.state !== "RUNNING" ||
+                body.tasks?.length !== 1 ||
+                body.tasks[0]?.state !== "RUNNING"
+              )
+                throw new Error("CDC connector is not ready");
+            }
+            response.writeHead(200).end("ready\n");
+          })().catch(() => response.writeHead(503).end("not ready\n"));
+        });
+  if (health !== undefined) {
+    const [host, portText] = healthAddress!.split(":");
+    const port = Number(portText);
+    if (host === undefined || !Number.isInteger(port) || port <= 0)
+      throw new Error("HTTP_LISTEN_ADDRESS must be host:port");
+    await new Promise<void>((resolve, reject) =>
+      health.once("error", reject).listen(port, host, resolve),
+    );
+  }
   const protoPath =
     process.env.PROTO_PATH ??
     join(process.cwd(), "packages/contracts/proto/event_store.proto");
@@ -218,6 +280,7 @@ export async function startServer(): Promise<grpc.Server> {
       callback: grpc.sendUnaryData<JsonObject>,
     ) => {
       try {
+        const started = performance.now();
         const result = await store.append(
           parseAppendRequest(call.request, producerService),
         );
@@ -225,7 +288,10 @@ export async function startServer(): Promise<grpc.Server> {
           ...result,
           acknowledged_at: new Date().toISOString(),
         });
+        metrics.appendCount += 1;
+        metrics.appendDurationSeconds += (performance.now() - started) / 1_000;
       } catch (error) {
+        metrics.appendFailureCount += 1;
         callback(
           errorFrom(
             error,
@@ -378,7 +444,12 @@ export async function startServer(): Promise<grpc.Server> {
   const grpcShutdown = server.tryShutdown.bind(server);
   server.tryShutdown = (callback) => {
     grpcShutdown(() => {
-      void pool.end().finally(callback);
+      void (async () => {
+        await new Promise<void>(
+          (resolve) => health?.close(() => resolve()) ?? resolve(),
+        );
+        await pool.end();
+      })().finally(callback);
     });
   };
   return server;

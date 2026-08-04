@@ -29,6 +29,8 @@ suite("gRPC to CDC", () => {
     process.env.PRODUCER_SERVICE = "orders-command";
     process.env.CDC_WAL_BUDGET_BYTES = String(8 * 1024 ** 3);
     process.env.GRPC_LISTEN_ADDRESS = "127.0.0.1:50061";
+    process.env.HTTP_LISTEN_ADDRESS = "127.0.0.1:50161";
+    process.env.CONNECT_URL = stack.connectUrl;
     process.env.GRPC_ALLOW_INSECURE = "true";
     server = await startServer();
     const definition = protoLoader.loadSync(
@@ -136,4 +138,16 @@ suite("gRPC to CDC", () => {
     });
     await consumer.disconnect();
   }, 60_000);
+
+  it("exposes CDC-gated readiness and append metrics", async () => {
+    await expect(fetch("http://127.0.0.1:50161/readyz")).resolves.toMatchObject(
+      {
+        status: 200,
+      },
+    );
+    const metrics = await fetch("http://127.0.0.1:50161/metrics").then(
+      (result) => result.text(),
+    );
+    expect(metrics).toContain("event_store_append_total");
+  });
 });
