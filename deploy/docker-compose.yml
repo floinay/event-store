@@ -82,6 +82,7 @@ services:
       context: ..
       dockerfile: deploy/event-store/Bootstrap.Dockerfile
     depends_on: [postgres, kafka, connect]
+    restart: on-failure
     environment:
       MIGRATION_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/event_store
       REPLICATION_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/event_store
