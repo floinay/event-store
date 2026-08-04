@@ -4,6 +4,7 @@ import { canonicalJson, uuidv7 } from "@event-store/contracts";
 import { PostgresEventStore } from "@event-store/postgres-store";
 import {
   ProjectionGapError,
+  ProjectionMetrics,
   ProjectionTransactionRunner,
 } from "@event-store/projection-runtime";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
@@ -74,12 +75,15 @@ suite("projection crash boundary", () => {
         streamRevision: event.streamRevision,
       },
     };
+    const metrics = new ProjectionMetrics();
     const runner = new ProjectionTransactionRunner(
       pool,
       { name: "probe-control", generationId },
       () => {
         throw new Error("CDC probe must not require a projection schema");
       },
+      undefined,
+      metrics,
     );
     let handlerCalls = 0;
     await expect(
@@ -88,6 +92,9 @@ suite("projection crash boundary", () => {
       }),
     ).resolves.toBe("processed");
     expect(handlerCalls).toBe(0);
+    expect(metrics.prometheus()).toContain(
+      "event_store_projection_db_transaction_duration_seconds_count 1",
+    );
     await expect(
       pool.query(
         "SELECT next_offset::text, last_event_id::text FROM projection_runtime.checkpoints WHERE projection_name='probe-control' AND generation_id=$1",
