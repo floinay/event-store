@@ -28,11 +28,17 @@ jobs:
           tests/integration/connect-network-recovery.test.ts
           tests/integration/connect-kafka-recovery.test.ts
           --reporter=json --outputFile=reliability-nightly.json
+      - run: >-
+          RUN_STRESS=true npx vitest run --no-file-parallelism
+          tests/sql-contract/concurrency.test.ts
+          --reporter=json --outputFile=concurrency-nightly.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: reliability-nightly
-          path: reliability-nightly.json
+          path: |
+            reliability-nightly.json
+            concurrency-nightly.json
           retention-days: 35
 
   weekly-soak:
