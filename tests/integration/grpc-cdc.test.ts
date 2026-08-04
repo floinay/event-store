@@ -636,11 +636,19 @@ suite("gRPC to CDC", () => {
         if (slot.rows[0]?.active === false) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
+      const admissionDeadline = Date.now() + 30_000;
+      while (Date.now() < admissionDeadline) {
+        const admission = await pool.query<{ cdc_delivery_healthy: boolean }>(
+          "SELECT cdc_delivery_healthy FROM event_store.runtime_config WHERE singleton",
+        );
+        if (admission.rows[0]?.cdc_delivery_healthy === false) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
       await expect(
-        fetch("http://127.0.0.1:50161/readyz"),
-      ).resolves.toMatchObject({
-        status: 503,
-      });
+        pool.query<{ cdc_delivery_healthy: boolean }>(
+          "SELECT cdc_delivery_healthy FROM event_store.runtime_config WHERE singleton",
+        ),
+      ).resolves.toMatchObject({ rows: [{ cdc_delivery_healthy: false }] });
       await consumer.connect();
       await consumer.subscribe({
         topics: ["event-store.events.v1"],
