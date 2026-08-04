@@ -1,3 +1,5 @@
+# Local/dev topology only. Production uses the Kubernetes bootstrap job and
+# RF=3 topics from deploy/kafka/topics.json.
 services:
   postgres:
     image: postgres:18.4-bookworm
@@ -75,6 +77,20 @@ services:
     secrets:
       - source: db-properties
         target: db.properties
+  bootstrap:
+    build:
+      context: ..
+      dockerfile: deploy/event-store/Bootstrap.Dockerfile
+    depends_on: [postgres, kafka, connect]
+    environment:
+      MIGRATION_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/event_store
+      REPLICATION_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/event_store
+      KAFKA_BROKERS: kafka:29092
+      CONNECT_URL: http://connect:8083
+      CDC_WAL_BUDGET_BYTES: "8589934592"
+      CONNECTOR_CONFIG_PATH: /app/deploy/connector/event-store-live.json
+      TOPICS_CONFIG_PATH: /app/deploy/kafka/topics.local.json
+      MIGRATE_CLUSTER: "true"
 volumes:
   postgres-data:
   postgres-wal-archive:

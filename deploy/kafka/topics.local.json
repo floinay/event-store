@@ -1,0 +1,8 @@
+[
+  {"name":"event-store.events.v1","partitions":24,"replicationFactor":1,"configs":{"cleanup.policy":"delete","retention.ms":"604800000","segment.ms":"3600000","compression.type":"producer","max.message.bytes":"2097152","message.timestamp.type":"CreateTime","min.insync.replicas":"1","unclean.leader.election.enable":"false"}},
+  {"name":"event-store.projection-dlq.v1","partitions":24,"replicationFactor":1,"configs":{"retention.ms":"2592000000","min.insync.replicas":"1"}},
+  {"name":"__debezium-heartbeat.event-store-cdc","partitions":1,"replicationFactor":1,"configs":{"retention.ms":"86400000","min.insync.replicas":"1"}},
+  {"name":"_connect-event-store-configs","partitions":1,"replicationFactor":1,"configs":{"cleanup.policy":"compact","min.insync.replicas":"1"}},
+  {"name":"_connect-event-store-offsets","partitions":25,"replicationFactor":1,"configs":{"cleanup.policy":"compact","min.insync.replicas":"1"}},
+  {"name":"_connect-event-store-status","partitions":5,"replicationFactor":1,"configs":{"cleanup.policy":"compact","min.insync.replicas":"1"}}
+]
