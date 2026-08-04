@@ -7,11 +7,13 @@ import { once } from "node:events";
 import { join } from "node:path";
 import { uuidv7 } from "@event-store/contracts";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
+import type { Pool } from "pg";
 
 const suite = process.env.RUN_LATENCY === "true" ? describe : describe.skip;
 const sampleCount = Number(process.env.LATENCY_SAMPLE_COUNT ?? 100);
 const concurrency = Number(process.env.LATENCY_CONCURRENCY ?? 1);
 const durationMs = Number(process.env.LATENCY_DURATION_MS ?? 0);
+const maxClockSkewMs = Number(process.env.MAX_CLOCK_SKEW_MS ?? 2);
 
 interface AppendClient extends grpc.Client {
   AppendToStream(
@@ -35,8 +37,10 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
   const stack = new EventStoreStack();
   let serviceProcess: ChildProcess;
   let client: AppendClient;
+  let pool: Pool;
   beforeAll(async () => {
     await stack.start({ cdc: true });
+    pool = await stack.pool();
     process.env.DATABASE_URL = stack.databaseUrl;
     process.env.PRODUCER_SERVICE = "latency-probe";
     process.env.CDC_WAL_BUDGET_BYTES = String(8 * 1024 ** 3);
@@ -74,6 +78,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       serviceProcess.kill("SIGTERM");
       await once(serviceProcess, "exit");
     }
+    await pool?.end();
     await stack.stop();
   }, 60_000);
 
@@ -86,6 +91,8 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       throw new Error("LATENCY_CONCURRENCY must be a positive integer");
     if (!Number.isFinite(durationMs) || durationMs < 0)
       throw new Error("LATENCY_DURATION_MS must be a non-negative number");
+    if (!Number.isFinite(maxClockSkewMs) || maxClockSkewMs < 0)
+      throw new Error("MAX_CLOCK_SKEW_MS must be a non-negative number");
     if (process.env.RUN_RELEASE_LATENCY === "true" && durationMs < 1_800_000)
       throw new Error("release latency profile requires at least 30 minutes");
     const committed = new Map<string, number>();
@@ -106,6 +113,20 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       topics: ["event-store.events.v1"],
       replace: true,
     });
+    const clockProbeStarted = Date.now();
+    const databaseClock = await pool.query<{ epoch_ms: string }>(
+      "SELECT (extract(epoch FROM clock_timestamp()) * 1000)::text AS epoch_ms",
+    );
+    const clockProbeFinished = Date.now();
+    const databaseEpochMs = Number(databaseClock.rows[0]?.epoch_ms);
+    if (!Number.isFinite(databaseEpochMs))
+      throw new Error("PostgreSQL did not return a measurable wall clock");
+    const consumerClockAtProbe = (clockProbeStarted + clockProbeFinished) / 2;
+    expect(
+      Math.abs(consumerClockAtProbe - databaseEpochMs),
+    ).toBeLessThanOrEqual(
+      maxClockSkewMs + (clockProbeFinished - clockProbeStarted) / 2,
+    );
     let warmupEventId: string | undefined;
     let appendsFinished = false;
     let warmupObserved!: () => void;
