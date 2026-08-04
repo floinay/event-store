@@ -127,6 +127,18 @@ suite("projection crash boundary", () => {
       ).rows[0]?.next_offset,
     ).toBe("1");
     await expect(
+      runner.process(record, async () => {
+        throw new Error("duplicate Kafka delivery reached the projection");
+      }),
+    ).resolves.toBe("duplicate");
+    expect(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM projection_test.events",
+        )
+      ).rows[0]?.count,
+    ).toBe(1);
+    await expect(
       runner.process({ ...record, offset: 2n }, async () => undefined),
     ).rejects.toBeInstanceOf(ProjectionGapError);
     expect(
