@@ -65,6 +65,106 @@ suite("append SQL contract", () => {
     ).toEqual(["1", "2"]);
   });
 
+  it("keeps every canonical envelope field equal to its indexed scalar", async () => {
+    const input = appendInput(id(), id(), [{ orderRef: "scalar-columns" }]);
+    const appended = await store.append(input);
+    const eventId = appended.events[0]?.eventId;
+    const row = await pool.query<{
+      event_envelope: Record<string, unknown>;
+      event_id: string;
+      namespace: string;
+      aggregate_type: string;
+      aggregate_id: string;
+      stream_revision: string;
+      event_number: string;
+      event_name: string;
+      schema_version: number;
+      occurred_at: string;
+      recorded_at: string;
+      producer_service: string;
+    }>(
+      `SELECT event_envelope,event_id::text,namespace,aggregate_type,aggregate_id::text,
+              stream_revision::text,event_number::text,event_name,schema_version,
+              occurred_at::text,recorded_at::text,producer_service
+         FROM event_store.events WHERE event_id=$1`,
+      [eventId],
+    );
+    const event = row.rows[0];
+    if (event === undefined) throw new Error("appended event was not stored");
+    expect(event.event_envelope).toMatchObject({
+      eventId: event.event_id,
+      namespace: event.namespace,
+      aggregateType: event.aggregate_type,
+      aggregateId: event.aggregate_id,
+      streamRevision: event.stream_revision,
+      eventNumber: event.event_number,
+      eventName: event.event_name,
+      schemaVersion: event.schema_version,
+      producerService: event.producer_service,
+    });
+    expect(new Date(String(event.event_envelope.occurredAt)).getTime()).toBe(
+      new Date(event.occurred_at).getTime(),
+    );
+    expect(new Date(String(event.event_envelope.recordedAt)).getTime()).toBe(
+      new Date(event.recorded_at).getTime(),
+    );
+  });
+
+  it("rolls back stream, event, and idempotency rows together", async () => {
+    const input = appendInput(id(), id(), [{ orderRef: "rolled-back" }]);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+        [
+          input.producerService,
+          input.namespace,
+          input.aggregateType,
+          input.aggregateId,
+          input.requestId,
+          input.expectedRevision.kind,
+          null,
+          JSON.stringify(input.events),
+          JSON.stringify(input.context),
+        ],
+      );
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+    await expect(
+      pool.query(
+        `SELECT
+           (SELECT count(*) FROM event_store.streams WHERE aggregate_id=$1)::int AS streams,
+           (SELECT count(*) FROM event_store.events WHERE aggregate_id=$1)::int AS events,
+           (SELECT count(*) FROM event_store.append_requests WHERE request_id=$2)::int AS requests`,
+        [input.aggregateId, input.requestId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ streams: 0, events: 0, requests: 0 }],
+    });
+  });
+
+  it("accepts exactly 1 MiB and rejects one byte more", async () => {
+    const accepted = appendInput(id(), id(), [{ data: "" }]);
+    const base = await pool.query<{ bytes: string }>(
+      "SELECT (octet_length($1::jsonb::text) + octet_length($2::jsonb::text))::text AS bytes",
+      [JSON.stringify(accepted.events), JSON.stringify(accepted.context)],
+    );
+    const bytes = Number(base.rows[0]?.bytes);
+    if (!Number.isSafeInteger(bytes)) throw new Error("could not size append");
+    accepted.events[0]!.payload.data = "x".repeat(1_048_576 - bytes);
+    await expect(store.append(accepted)).resolves.toMatchObject({
+      currentRevision: "1",
+    });
+    const rejected = appendInput(id(), id(), [{ data: "" }]);
+    rejected.events[0]!.payload.data = "x".repeat(1_048_577 - bytes);
+    await expect(store.append(rejected)).rejects.toMatchObject({
+      code: "22001",
+    });
+  });
+
   it("rejects a changed body for an already acknowledged requestId", async () => {
     const aggregateId = id();
     const requestId = id();
