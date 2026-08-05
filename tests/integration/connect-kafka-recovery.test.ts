@@ -56,6 +56,7 @@ suite("Connect to Kafka network recovery", () => {
         },
       });
     });
+    await stack.appendLiveCdcBarrier();
     await stack.setConnectKafkaEnabled(false);
     await new PostgresEventStore(pool).append({
       producerService: "orders-command",
@@ -86,6 +87,7 @@ suite("Connect to Kafka network recovery", () => {
       ]),
     ).resolves.toBe(true);
     await stack.setConnectKafkaEnabled(true);
+    await stack.appendLiveCdcBarrier();
     await expect(delivered).resolves.toBeUndefined();
     await consumer.disconnect();
   }, 60_000);
@@ -125,6 +127,7 @@ suite("Connect to Kafka network recovery", () => {
         },
       });
     });
+    await stack.appendLiveCdcBarrier();
     await stack.setConnectKafkaEnabled(false);
     try {
       await new PostgresEventStore(pool).append({
@@ -162,6 +165,7 @@ suite("Connect to Kafka network recovery", () => {
       await stack.setConnectKafkaEnabled(true);
     }
     await stack.startConnect();
+    await stack.appendLiveCdcBarrier();
     await expect(delivered).resolves.toBeUndefined();
     await consumer.disconnect();
   }, 90_000);
@@ -201,6 +205,7 @@ suite("Connect to Kafka network recovery", () => {
         },
       });
     });
+    await stack.appendLiveCdcBarrier();
     await stack.setConnectKafkaEnabled(false);
     try {
       await new PostgresEventStore(pool).append({
@@ -237,6 +242,7 @@ suite("Connect to Kafka network recovery", () => {
     } finally {
       await stack.setConnectKafkaEnabled(true);
     }
+    await stack.appendLiveCdcBarrier();
     await expect(delivered).resolves.toBeUndefined();
     await consumer.disconnect();
   }, 90_000);
@@ -246,6 +252,7 @@ suite("Connect to Kafka network recovery", () => {
       kafkaJS: { brokers: [stack.kafkaBroker()] },
     });
     const requestId = uuidv7();
+    const readinessRequestId = uuidv7();
     const raw = kafka.consumer({
       kafkaJS: {
         groupId: `connect-eos-raw-${uuidv7()}`,
@@ -280,12 +287,34 @@ suite("Connect to Kafka network recovery", () => {
         30_000,
       );
     });
-    let committedSeen!: (offset: bigint) => void;
-    const committedRecord = new Promise<bigint>((resolve, reject) => {
-      committedSeen = resolve;
+    let rawReady!: () => void;
+    const rawReadyRecord = new Promise<void>((resolve, reject) => {
+      rawReady = resolve;
       setTimeout(
         () =>
-          reject(new Error("read_committed did not receive replayed record")),
+          reject(
+            new Error(
+              "read_uncommitted consumer did not receive readiness barrier",
+            ),
+          ),
+        60_000,
+      );
+    });
+    let committedSeen!: (offset: bigint) => void;
+    let committedOffset: bigint | undefined;
+    const committedRecord = new Promise<bigint>((resolve) => {
+      committedSeen = resolve;
+    });
+    let committedReady!: () => void;
+    const committedReadyRecord = new Promise<void>((resolve, reject) => {
+      committedReady = resolve;
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "read_committed consumer did not receive readiness barrier",
+            ),
+          ),
         60_000,
       );
     });
@@ -294,6 +323,7 @@ suite("Connect to Kafka network recovery", () => {
         const event = JSON.parse(message.value?.toString() ?? "{}") as {
           context?: { requestId?: string };
         };
+        if (event.context?.requestId === readinessRequestId) rawReady();
         if (event.context?.requestId === requestId)
           rawSeen(BigInt(message.offset));
       },
@@ -303,10 +333,18 @@ suite("Connect to Kafka network recovery", () => {
         const event = JSON.parse(message.value?.toString() ?? "{}") as {
           context?: { requestId?: string };
         };
-        if (event.context?.requestId === requestId)
-          committedSeen(BigInt(message.offset));
+        if (event.context?.requestId === readinessRequestId) committedReady();
+        if (event.context?.requestId === requestId) {
+          committedOffset ??= BigInt(message.offset);
+          committedSeen(committedOffset);
+        }
       },
     });
+    await Promise.all([
+      stack.appendLiveCdcBarrier(readinessRequestId),
+      rawReadyRecord,
+      committedReadyRecord,
+    ]);
     const latency = await stack.addConnectKafkaLatency(10_000);
     try {
       await new PostgresEventStore(pool).append({
@@ -331,24 +369,36 @@ suite("Connect to Kafka network recovery", () => {
           },
         ],
       });
+      const targetLsn = await pool.query<{ lsn: string }>(
+        "SELECT pg_current_wal_lsn()::text AS lsn",
+      );
+      const lsn = targetLsn.rows[0]?.lsn;
+      if (lsn === undefined)
+        throw new Error("could not read aborted append WAL LSN");
       const abortedOffset = await rawRecord;
-      await expect(
-        Promise.race([
-          committedRecord.then(() => false),
-          new Promise<true>((resolve) =>
-            setTimeout(() => resolve(true), 1_000),
-          ),
-        ]),
-      ).resolves.toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(committedOffset).toBeUndefined();
       await stack.crashConnect();
       await latency.remove();
       await stack.startConnect();
-      const replayedOffset = await committedRecord;
+      await stack.waitForLiveCdcCaughtUp(lsn);
+      const replayedOffset = await Promise.race([
+        committedRecord,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error("read_committed did not receive replayed record"),
+              ),
+            90_000,
+          ),
+        ),
+      ]);
       expect(replayedOffset).toBeGreaterThan(abortedOffset);
     } finally {
       await latency.remove().catch(() => undefined);
       await raw.disconnect().catch(() => undefined);
       await committed.disconnect().catch(() => undefined);
     }
-  }, 120_000);
+  }, 180_000);
 });

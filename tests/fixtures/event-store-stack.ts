@@ -11,9 +11,26 @@ import {
 } from "@testcontainers/toxiproxy";
 import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { migrate } from "@event-store/migrate";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { uuidv7 } from "@event-store/contracts";
+
+const connectTestImage = "event-store-connect-test:local";
+let connectTestImageBuild: Promise<void> | undefined;
+
+async function connectContainer(): Promise<GenericContainer> {
+  if (connectTestImageBuild === undefined) {
+    connectTestImageBuild = GenericContainer.fromDockerfile(
+      join(process.cwd(), "tests/fixtures"),
+      "Connect.Dockerfile",
+    )
+      .build(connectTestImage)
+      .then(() => undefined);
+  }
+  await connectTestImageBuild;
+  return new GenericContainer(connectTestImage);
+}
 
 export class EventStoreStack {
   #network?: Network;
@@ -363,8 +380,8 @@ EOF
     if (this.#network === undefined)
       throw new Error("CDC stack network is not started");
     this.#connectUsesToxiproxy = viaToxiproxy;
-    this.#connect = await new GenericContainer(
-      "quay.io/debezium/connect:3.6.0.Final",
+    this.#connect = await (
+      await connectContainer()
     )
       .withEnvironment({
         BOOTSTRAP_SERVERS: this.#connectUsesKafkaProxy
@@ -666,12 +683,11 @@ EOF
   }
 
   /** Appends a test-only marker and waits until live CDC has flushed past it. */
-  async appendLiveCdcBarrier(): Promise<{
+  async appendLiveCdcBarrier(requestId = uuidv7()): Promise<{
     requestId: string;
     eventId: string;
     lsn: string;
   }> {
-    const requestId = uuidv7();
     const aggregateId = uuidv7();
     const pool = new Pool({ connectionString: this.databaseUrl });
     try {
@@ -829,7 +845,9 @@ EOF
       percent === 0
         ? "tc qdisc del dev eth0 root 2>/dev/null || true"
         : `tc qdisc replace dev eth0 root netem loss ${percent}%`;
-    const result = await this.#connect.exec(["bash", "-ceu", command]);
+    const result = await this.#connect.exec(["bash", "-ceu", command], {
+      user: "root",
+    });
     if (result.exitCode !== 0)
       throw new Error(`could not set Connect packet loss: ${result.stderr}`);
   }

@@ -53,6 +53,7 @@ suite("PG to Connect network recovery", () => {
         },
       });
     });
+    await stack.appendLiveCdcBarrier();
     await stack.setPostgresConnectEnabled(false);
     await new PostgresEventStore(pool).append({
       producerService: "orders-command",
@@ -83,6 +84,7 @@ suite("PG to Connect network recovery", () => {
       ]),
     ).resolves.toBe(true);
     await stack.setPostgresConnectEnabled(true);
+    await stack.appendLiveCdcBarrier();
     await expect(delivered).resolves.toBeUndefined();
     await consumer.disconnect();
   }, 60_000);
@@ -101,6 +103,7 @@ suite("PG to Connect network recovery", () => {
     });
     const expected = new Set<string>();
     const received = new Set<string>();
+    const seen = new Set<string>();
     let complete!: () => void;
     let fail!: (error: Error) => void;
     const delivered = new Promise<void>((resolve, reject) => {
@@ -122,6 +125,7 @@ suite("PG to Connect network recovery", () => {
           context?: { requestId?: string };
         };
         const requestId = event.context?.requestId;
+        if (requestId !== undefined) seen.add(requestId);
         if (requestId !== undefined && expected.has(requestId)) {
           received.add(requestId);
           if (received.size === expected.size) complete();
@@ -157,7 +161,7 @@ suite("PG to Connect network recovery", () => {
     };
     const waitFor = async (requestId: string): Promise<void> => {
       const deadline = Date.now() + 30_000;
-      while (!received.has(requestId)) {
+      while (!seen.has(requestId)) {
         if (Date.now() >= deadline)
           throw new Error(
             `CDC did not deliver ${requestId} under network fault`,
@@ -165,7 +169,14 @@ suite("PG to Connect network recovery", () => {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
     };
+    const waitForReadyBarrier = async (): Promise<void> => {
+      const requestId = uuidv7();
+      const observed = waitFor(requestId);
+      await stack.appendLiveCdcBarrier(requestId);
+      await observed;
+    };
     try {
+      await waitForReadyBarrier();
       for (const latency of [20, 50, 100]) {
         const toxic = await stack.addPostgresConnectLatency(latency);
         try {
@@ -173,6 +184,7 @@ suite("PG to Connect network recovery", () => {
         } finally {
           await toxic.remove();
         }
+        await waitForReadyBarrier();
       }
       const bandwidth = await stack.addPostgresConnectBandwidthLimit(1024);
       try {
@@ -180,6 +192,7 @@ suite("PG to Connect network recovery", () => {
       } finally {
         await bandwidth.remove();
       }
+      await waitForReadyBarrier();
       for (const packetLoss of [1, 5] as const) {
         await stack.setConnectPacketLoss(packetLoss);
         try {
@@ -187,6 +200,7 @@ suite("PG to Connect network recovery", () => {
         } finally {
           await stack.setConnectPacketLoss(0);
         }
+        await waitForReadyBarrier();
       }
       if (received.size === expected.size) complete();
       await delivered;
