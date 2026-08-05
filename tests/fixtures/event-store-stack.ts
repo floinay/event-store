@@ -13,6 +13,7 @@ import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
 import { migrate } from "@event-store/migrate";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
+import { uuidv7 } from "@event-store/contracts";
 
 export class EventStoreStack {
   #network?: Network;
@@ -608,6 +609,113 @@ EOF
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     throw new Error(`connector ${name} did not become RUNNING`);
+  }
+
+  /**
+   * Wait until the live source task is running, attached to its replication
+   * slot, and has durably advanced through the supplied WAL position.
+   */
+  async waitForLiveCdcCaughtUp(requiredLsn: string): Promise<void> {
+    const deadline = Date.now() + 60_000;
+    let lastStatus: unknown;
+    let lastSlot: unknown;
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(
+          `${this.connectUrl}/connectors/event-store-live/status`,
+        );
+        if (response.ok) lastStatus = await response.json();
+        const status = lastStatus as {
+          connector?: { state?: string };
+          tasks?: { state?: string }[];
+        };
+        const pool = new Pool({ connectionString: this.databaseUrl });
+        try {
+          const slot = await pool.query<{
+            active: boolean;
+            confirmed_flush_lsn: string | null;
+            caught_up: boolean;
+          }>(
+            `SELECT active, confirmed_flush_lsn::text,
+                    confirmed_flush_lsn IS NOT NULL
+                      AND pg_wal_lsn_diff(confirmed_flush_lsn, $1::pg_lsn) >= 0 AS caught_up
+               FROM pg_replication_slots
+              WHERE slot_name='event_store_live'`,
+            [requiredLsn],
+          );
+          lastSlot = slot.rows[0] ?? null;
+          if (
+            status.connector?.state === "RUNNING" &&
+            status.tasks?.length === 1 &&
+            status.tasks[0]?.state === "RUNNING" &&
+            slot.rows[0]?.active === true &&
+            slot.rows[0]?.caught_up === true
+          )
+            return;
+        } finally {
+          await pool.end();
+        }
+      } catch {
+        // Connect can briefly refuse its status endpoint while recovering.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(
+      `live CDC did not catch up to ${requiredLsn}: ${JSON.stringify({ lastStatus, lastSlot })}`,
+    );
+  }
+
+  /** Appends a test-only marker and waits until live CDC has flushed past it. */
+  async appendLiveCdcBarrier(): Promise<{
+    requestId: string;
+    eventId: string;
+    lsn: string;
+  }> {
+    const requestId = uuidv7();
+    const aggregateId = uuidv7();
+    const pool = new Pool({ connectionString: this.databaseUrl });
+    try {
+      const appended = await pool.query<{
+        append_v1: { events: { eventId: string }[] };
+      }>(
+        "SELECT event_store.append_v1($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)",
+        [
+          "cdc-test-barrier",
+          "orders",
+          "Barrier",
+          aggregateId,
+          requestId,
+          "no_stream",
+          null,
+          JSON.stringify([
+            {
+              eventName: "cdc.ready",
+              schemaVersion: 1,
+              occurredAt: "2026-08-04T10:12:18.120Z",
+              payload: {},
+            },
+          ]),
+          JSON.stringify({
+            correlationId: requestId,
+            causationId: null,
+            actor: { kind: "system", subjectRef: "cdc-test-barrier" },
+          }),
+        ],
+      );
+      const eventId = appended.rows[0]?.append_v1.events[0]?.eventId;
+      if (eventId === undefined)
+        throw new Error("CDC barrier append returned no event");
+      const lsn = await pool.query<{ lsn: string }>(
+        "SELECT pg_current_wal_lsn()::text AS lsn",
+      );
+      const value = lsn.rows[0]?.lsn;
+      if (value === undefined)
+        throw new Error("could not read CDC barrier WAL LSN");
+      await this.waitForLiveCdcCaughtUp(value);
+      return { requestId, eventId, lsn: value };
+    } finally {
+      await pool.end();
+    }
   }
 
   private async waitForLiveSlotActive(): Promise<void> {
