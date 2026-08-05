@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { EventStoreStack } from "../fixtures/event-store-stack.js";
 import { PostgresEventStore } from "@event-store/postgres-store";
 import { canonicalJson } from "@event-store/contracts";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 const enabled = process.env.RUN_INTEGRATION === "true";
 const suite = enabled ? describe : describe.skip;
@@ -260,6 +260,103 @@ suite("append SQL contract", () => {
         rejected.aggregateId,
       ),
     ).toBeUndefined();
+  });
+
+  it("rolls back every append write when an event in a batch fails", async () => {
+    const input = appendInput(id(), id(), [
+      { index: "1" },
+      { index: "2" },
+      { index: "3" },
+    ]);
+    try {
+      await pool.query(`
+        CREATE FUNCTION event_store.test_fail_second_batch_event() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.request_id = '${input.requestId}'::uuid
+             AND NEW.request_event_no = 2 THEN
+            RAISE EXCEPTION 'injected batch failure' USING ERRCODE = 'P0001';
+          END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER test_fail_second_batch_event
+        BEFORE INSERT ON event_store.events
+        FOR EACH ROW EXECUTE FUNCTION event_store.test_fail_second_batch_event();
+      `);
+      await expect(store.append(input)).rejects.toMatchObject({
+        code: "P0001",
+      });
+      await expect(
+        pool.query(
+          `SELECT
+             (SELECT count(*) FROM event_store.streams WHERE aggregate_id=$1)::int AS streams,
+             (SELECT count(*) FROM event_store.events WHERE aggregate_id=$1)::int AS events,
+             (SELECT count(*) FROM event_store.append_requests WHERE request_id=$2)::int AS requests`,
+          [input.aggregateId, input.requestId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ streams: 0, events: 0, requests: 0 }],
+      });
+    } finally {
+      await pool
+        .query(
+          "DROP TRIGGER IF EXISTS test_fail_second_batch_event ON event_store.events; DROP FUNCTION IF EXISTS event_store.test_fail_second_batch_event()",
+        )
+        .catch(() => undefined);
+    }
+    await expect(store.append(input)).resolves.toMatchObject({
+      currentRevision: "3",
+    });
+  });
+
+  it("replays the canonical result after losing the response after commit", async () => {
+    const input = appendInput(id(), id(), [{ orderRef: "response-loss" }]);
+    let loseResponse = true;
+    const responseLossPool = {
+      connect: async (): Promise<PoolClient> => {
+        const client = await pool.connect();
+        return new Proxy(client, {
+          get(target, property, receiver) {
+            if (property !== "query")
+              return Reflect.get(target, property, receiver);
+            return async (...args: unknown[]) => {
+              const result = await (
+                target.query as (...values: never[]) => unknown
+              )(...(args as never[]));
+              if (
+                loseResponse &&
+                typeof args[0] === "string" &&
+                args[0].includes("event_store.append_v1")
+              ) {
+                loseResponse = false;
+                throw Object.assign(
+                  new Error("connection reset after commit"),
+                  {
+                    code: "ECONNRESET",
+                  },
+                );
+              }
+              return result;
+            };
+          },
+        }) as PoolClient;
+      },
+    } as Pool;
+    await expect(
+      new PostgresEventStore(responseLossPool).append(input),
+    ).rejects.toMatchObject({
+      code: "ECONNRESET",
+    });
+    const replay = await store.append(input);
+    expect(replay.currentRevision).toBe("1");
+    await expect(
+      pool.query<{ events: number; requests: number }>(
+        `SELECT
+           (SELECT count(*) FROM event_store.events WHERE request_id=$1)::int AS events,
+           (SELECT count(*) FROM event_store.append_requests WHERE request_id=$1)::int AS requests`,
+        [input.requestId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ events: 1, requests: 1 }] });
   });
 
   it("owns SECURITY DEFINER functions by event_store_owner", async () => {
