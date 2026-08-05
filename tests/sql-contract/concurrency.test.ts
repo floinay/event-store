@@ -83,6 +83,55 @@ suite("append concurrency", () => {
     expect(await store.getStreamHead("orders", "Order", aggregateId)).toBe(1n);
   }, 120_000);
 
+  it("allows exactly one of 1,000 no-stream contenders", async () => {
+    const aggregateId = uuidv7();
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const contenders = Array.from({ length: 1_000 }, () => {
+      const requestId = uuidv7();
+      return started.then(() =>
+        store.append(appendInput(requestId, aggregateId, requestId)),
+      );
+    });
+    release();
+    const outcomes = await Promise.allSettled(contenders);
+    const rejected = outcomes.filter(
+      (outcome): outcome is PromiseRejectedResult =>
+        outcome.status === "rejected",
+    );
+    expect(
+      outcomes.filter((outcome) => outcome.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(rejected).toHaveLength(999);
+    expect(rejected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: expect.objectContaining({ code: "40001" }),
+        }),
+      ]),
+    );
+    expect(rejected.every((outcome) => outcome.reason?.code === "40001")).toBe(
+      true,
+    );
+    expect(await store.getStreamHead("orders", "Order", aggregateId)).toBe(1n);
+    await expect(
+      pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM event_store.events
+         WHERE namespace='orders' AND aggregate_type='Order' AND aggregate_id=$1`,
+        [aggregateId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+    await expect(
+      pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM event_store.append_requests
+         WHERE namespace='orders' AND aggregate_type='Order' AND aggregate_id=$1`,
+        [aggregateId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+  }, 180_000);
+
   it("returns byte-equivalent results for 1,000 identical request IDs", async () => {
     const requestId = uuidv7();
     const aggregateId = uuidv7();
