@@ -62,7 +62,7 @@ suite("Debezium trust_offset", () => {
           offsets.set(key, values);
         },
       });
-      const append = async () => {
+      const append = async (): Promise<string> => {
         const requestId = uuidv7();
         await new PostgresEventStore(pool).append({
           producerService: "trust-offset-test",
@@ -86,6 +86,13 @@ suite("Debezium trust_offset", () => {
             },
           ],
         });
+        const lsn = await pool.query<{ lsn: string }>(
+          "SELECT pg_current_wal_lsn()::text AS lsn",
+        );
+        const value = lsn.rows[0]?.lsn;
+        if (value === undefined)
+          throw new Error("could not read append WAL LSN");
+        return value;
       };
       await append();
       await eventually(
@@ -96,7 +103,7 @@ suite("Debezium trust_offset", () => {
       const staleOffset = offsetValues?.[0];
       if (offsetKey === undefined || staleOffset === undefined)
         throw new Error("could not identify the initial Connect source offset");
-      await append();
+      const secondAppendLsn = await append();
       await eventually(
         async () =>
           offsets
@@ -104,6 +111,7 @@ suite("Debezium trust_offset", () => {
             ?.some((candidate) => candidate !== staleOffset) === true,
         "Kafka Connect did not advance the persisted source offset",
       );
+      await stack.waitForLiveCdcCaughtUp(secondAppendLsn);
 
       await stack.stopConnect();
       await producer.connect();
