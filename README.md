@@ -35,6 +35,13 @@ projection stores an inbox record and its read-model update in the same
 PostgreSQL transaction. Repeated Kafka records therefore do not repeat the
 projection effect.
 
+`eventNumber` is a unique allocation order, not a global commit order. A
+rolled-back transaction can leave a gap, and concurrent transactions can commit
+in a different order from their allocated numbers. It is therefore never a
+live cursor, pagination cursor, or recovery watermark. CDC consumers resume
+from their Debezium/Kafka offsets; per-aggregate order is defined by
+`streamRevision` and preserved by the aggregate Kafka key.
+
 When delivery health, a slot, or failover is suspect, appends are durably
 fenced. Reopening requires an event-ID reconciliation on the current PostgreSQL
 timeline; recovery barriers and all append entry points are serialized with
