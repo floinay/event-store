@@ -473,6 +473,10 @@ suite("Debezium CDC", () => {
     try {
       const firstRequestId = uuidv7();
       const secondRequestId = uuidv7();
+      // This transaction intentionally stays open while the later allocation
+      // commits and reaches Kafka. Pool sessions can inherit the Event Store's
+      // 2s idle transaction timeout, so make this test-owned session explicit.
+      await first.query("SET idle_in_transaction_session_timeout = '30s'");
       await first.query("BEGIN");
       const allocatedFirst = await append(first, firstRequestId);
       const committedSecond = await append(second, secondRequestId);
