@@ -3,5 +3,10 @@ modules:
   - path: packages/contracts/proto
 lint:
   use: [STANDARD]
+  except:
+    # The public v1 package keeps one source file at the module root and uses
+    # established streamed response message names.
+    - PACKAGE_DIRECTORY_MATCH
+    - RPC_RESPONSE_STANDARD_NAME
 breaking:
   use: [FILE]
