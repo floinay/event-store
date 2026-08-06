@@ -97,7 +97,7 @@ This local Docker run measured the following:
 
 The commit-to-consumer test also measured p99.9 at 32 ms. These are experiment
 results on one local Docker environment, not a production guarantee. The
-configured CI acceptance threshold is p50 ≤ 60 ms, mean ≤ 80 ms, p95 ≤ 100 ms
+configured CI acceptance threshold is p50 ≤ 60 ms, mean ≤ 80 ms, p95 ≤ 120 ms
 and p99.9 ≤ 200 ms for commit-to-consumer delivery. Production SLOs must be
 set from production telemetry rather than this shared-runner benchmark.
 
