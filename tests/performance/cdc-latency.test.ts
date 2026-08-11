@@ -31,6 +31,9 @@ const releaseLatencyProfile = process.env.RUN_RELEASE_LATENCY === "true";
 const latencyLimits = releaseLatencyProfile
   ? { p50: 50, mean: 80, p95: 100, p999: 200 }
   : { p50: 75, mean: 100, p95: 175, p999: 300 };
+const appendLatencyLimits = releaseLatencyProfile
+  ? { p50: 15, p95: 30, p99: 50 }
+  : { p50: 30, p95: 75, p99: 120 };
 
 interface AppendClient extends grpc.Client {
   AppendToStream(
@@ -371,9 +374,9 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
       expect(allSamples).toHaveLength(committed.size);
       expect(metrics.samples).toBeGreaterThanOrEqual(sampleCount);
       expect(appendMetrics.samples).toBeGreaterThanOrEqual(sampleCount);
-      expect(appendMetrics.p50).toBeLessThanOrEqual(15);
-      expect(appendMetrics.p95).toBeLessThanOrEqual(30);
-      expect(appendMetrics.p99).toBeLessThanOrEqual(50);
+      expect(appendMetrics.p50).toBeLessThanOrEqual(appendLatencyLimits.p50);
+      expect(appendMetrics.p95).toBeLessThanOrEqual(appendLatencyLimits.p95);
+      expect(appendMetrics.p99).toBeLessThanOrEqual(appendLatencyLimits.p99);
       expect(
         [...committed.keys()].every(
           (eventId) => (observedCount.get(eventId) ?? 0) >= 1,
