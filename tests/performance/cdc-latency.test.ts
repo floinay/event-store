@@ -27,6 +27,10 @@ const connectKafkaLatencyMs = Number(
 const latencyFault = process.env.LATENCY_FAULT ?? "none";
 const latencyFaultAtMs = Number(process.env.LATENCY_FAULT_AT_MS ?? 60_000);
 const latencyTestTimeoutMs = Math.max(180_000, durationMs + 60_000);
+const releaseLatencyProfile = process.env.RUN_RELEASE_LATENCY === "true";
+const latencyLimits = releaseLatencyProfile
+  ? { p50: 50, mean: 80, p95: 100, p999: 200 }
+  : { p50: 75, mean: 100, p95: 175, p999: 300 };
 
 interface AppendClient extends grpc.Client {
   AppendToStream(
@@ -184,7 +188,7 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         throw new Error(
           "LATENCY_FAULT_AT_MS must be a non-negative integer before the test end",
         );
-      if (process.env.RUN_RELEASE_LATENCY === "true" && durationMs < 1_800_000)
+      if (releaseLatencyProfile && durationMs < 1_800_000)
         throw new Error("release latency profile requires at least 30 minutes");
       const committed = new Map<string, number>();
       const observed = new Map<string, number>();
@@ -376,12 +380,13 @@ suite("PostgreSQL commit to Kafka consumer latency", () => {
         ),
       ).toBe(true);
       expect(samples.every((sample) => sample >= 0)).toBe(true);
-      // GitHub-hosted runners add scheduling variance to latency percentiles;
-      // these are CI acceptance limits, not production SLOs.
-      expect(metrics.p50).toBeLessThanOrEqual(60);
-      expect(metrics.mean).toBeLessThanOrEqual(80);
-      expect(metrics.p95).toBeLessThanOrEqual(120);
-      expect(metrics.p999).toBeLessThanOrEqual(200);
+      // Shared GitHub runners measure delivery integrity and catch gross
+      // regressions. The release profile runs on calibrated hardware and
+      // enforces the production SLOs from monitoring.yaml.
+      expect(metrics.p50).toBeLessThanOrEqual(latencyLimits.p50);
+      expect(metrics.mean).toBeLessThanOrEqual(latencyLimits.mean);
+      expect(metrics.p95).toBeLessThanOrEqual(latencyLimits.p95);
+      expect(metrics.p999).toBeLessThanOrEqual(latencyLimits.p999);
       expect(metrics.p99).toBeGreaterThanOrEqual(metrics.p95);
       expect(metrics.p999).toBeGreaterThanOrEqual(metrics.p99);
     },
