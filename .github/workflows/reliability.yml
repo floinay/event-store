@@ -5,6 +5,12 @@ on:
     - cron: "0 2 * * *"
     - cron: "0 1 * * 0"
   workflow_dispatch:
+    inputs:
+      run_hosted_diagnostics:
+        description: Run non-gating load diagnostics on GitHub-hosted runners
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   nightly-recovery:
@@ -99,7 +105,10 @@ jobs:
           retention-days: 35
 
   nightly-load-profiles:
-    if: github.event.schedule != '0 1 * * 0' || github.event_name == 'workflow_dispatch'
+    # These profiles are diagnostic only: hosted runners are intentionally not
+    # used to judge production latency. The calibrated release runner is the
+    # SLO gate. Run these explicitly when investigating a regression.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_hosted_diagnostics == true
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:

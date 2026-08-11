@@ -146,7 +146,17 @@ export async function ensureReplayTopic(
         },
       ],
     });
-    const metadata = await admin.fetchTopicMetadata({ topics: [topic] });
+    const metadataDeadline = Date.now() + 10_000;
+    let metadata: Awaited<ReturnType<typeof admin.fetchTopicMetadata>> = [];
+    while (true) {
+      try {
+        metadata = await admin.fetchTopicMetadata({ topics: [topic] });
+        break;
+      } catch (error) {
+        if (Date.now() >= metadataDeadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
     const partitions = metadata[0]?.partitions;
     if (partitions?.length !== kafkaPartitionCount)
       throw new Error(

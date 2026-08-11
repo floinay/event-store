@@ -129,12 +129,16 @@ EOF
       while (Date.now() < deadline) {
         const pool = new Pool({ connectionString: databaseUrl });
         try {
-          await pool.query("SELECT pg_is_in_recovery()");
+          const status = await pool.query<{ promoted: boolean }>(
+            "SELECT NOT pg_is_in_recovery() AS promoted",
+          );
           await pool.end();
-          return {
-            databaseUrl,
-            stop: () => restored.stop().then(() => undefined),
-          };
+          if (status.rows[0]?.promoted)
+            return {
+              databaseUrl,
+              stop: () => restored.stop().then(() => undefined),
+            };
+          await new Promise((resolve) => setTimeout(resolve, 250));
         } catch {
           await pool.end().catch(() => undefined);
           await new Promise((resolve) => setTimeout(resolve, 250));
