@@ -375,30 +375,25 @@ suite("projection recovery", () => {
           `^${projectionName}\\|${generationId}\\|${sourceTopic}\\|0\\|0$`,
         ),
       );
-      await expect(
-        pool.query<{
-          event_id: string;
-          envelope_sha256: string;
-          attempt_count: number;
-          dlq_published_at: string | null;
-        }>(
-          `SELECT event_id::text,envelope_sha256,attempt_count,dlq_published_at
-             FROM projection_runtime.failures
-            WHERE projection_name=$1 AND generation_id=$2 AND topic_name=$3`,
-          [projectionName, generationId, sourceTopic],
-        ),
-      ).resolves.toMatchObject({
-        rows: [
-          {
-            event_id: expect.stringMatching(
-              /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-            ),
-            envelope_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-            attempt_count: 8,
-            dlq_published_at: expect.any(Date),
-          },
-        ],
-      });
+      const failures = await pool.query<{
+        event_id: string;
+        envelope_sha256: string;
+        attempt_count: number;
+        dlq_published_at: Date | null;
+      }>(
+        `SELECT event_id::text,envelope_sha256,attempt_count,dlq_published_at
+           FROM projection_runtime.failures
+          WHERE projection_name=$1 AND generation_id=$2 AND topic_name=$3`,
+        [projectionName, generationId, sourceTopic],
+      );
+      expect(failures.rows).toHaveLength(1);
+      const failure = failures.rows[0]!;
+      expect(failure.event_id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      expect(failure.envelope_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(failure.attempt_count).toBe(8);
+      expect(failure.dlq_published_at).not.toBeNull();
     } finally {
       await producer.disconnect().catch(() => undefined);
       await consumer.disconnect().catch(() => undefined);
