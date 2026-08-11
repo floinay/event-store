@@ -534,6 +534,18 @@ suite("PostgreSQL HA promotion", () => {
         recoveryConnectorName,
         "initial",
       );
+      // This test talks directly to Postgres, unlike a production service
+      // which closes admission during its promotion restart. Model the
+      // monitor's durable fence explicitly instead of relying on promotion
+      // timing to make an append fail.
+      const promotionFence = new Pool({ connectionString: standbyUrl });
+      try {
+        await promotionFence.query(
+          "SELECT event_store.set_cdc_delivery_health(false)",
+        );
+      } finally {
+        await promotionFence.end();
+      }
       await expect(
         appendProbe(standbyUrl, afterPromotionRequestId, "after-promotion"),
       ).rejects.toMatchObject({ code: "P0001" });
