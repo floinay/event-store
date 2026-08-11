@@ -11,6 +11,36 @@ jobs:
     if: github.event.schedule != '0 1 * * 0' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: slot-loss
+            file: tests/integration/slot-loss-recovery.test.ts
+          - name: replay
+            file: tests/integration/replay-coordinator.test.ts
+          - name: pitr
+            file: tests/integration/pitr-recovery.test.ts
+          - name: promotion
+            file: tests/integration/postgres-ha-promotion.test.ts
+          - name: projection-transaction
+            file: tests/integration/projection-transaction.test.ts
+          - name: projection-recovery
+            file: tests/integration/projection-recovery.test.ts
+          - name: consumer-postgres
+            file: tests/integration/consumer-postgres-recovery.test.ts
+          - name: consumer-kafka
+            file: tests/integration/consumer-kafka-crash-recovery.test.ts
+          - name: grpc-cdc
+            file: tests/integration/grpc-cdc.test.ts
+          - name: cdc
+            file: tests/integration/cdc.test.ts
+          - name: connect-network
+            file: tests/integration/connect-network-recovery.test.ts
+          - name: connect-kafka
+            file: tests/integration/connect-kafka-recovery.test.ts
+          - name: connect-long-outage
+            file: tests/integration/connect-long-outage-recovery.test.ts
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,31 +49,18 @@ jobs:
       - run: npm run build
       - run: >-
           RUN_INTEGRATION=true npx vitest run --no-file-parallelism
-          tests/integration/slot-loss-recovery.test.ts
-          tests/integration/replay-coordinator.test.ts
-          tests/integration/pitr-recovery.test.ts
-          tests/integration/postgres-ha-promotion.test.ts
-          tests/integration/projection-transaction.test.ts
-          tests/integration/projection-recovery.test.ts
-          tests/integration/consumer-postgres-recovery.test.ts
-          tests/integration/consumer-kafka-crash-recovery.test.ts
-          tests/integration/grpc-cdc.test.ts
-          tests/integration/cdc.test.ts
-          tests/integration/connect-network-recovery.test.ts
-          tests/integration/connect-kafka-recovery.test.ts
-          tests/integration/connect-long-outage-recovery.test.ts
-          --reporter=json --outputFile=reliability-nightly.json
+          ${{ matrix.suite.file }}
+          --reporter=json --outputFile=reliability-${{ matrix.suite.name }}.json
       - run: >-
           RUN_STRESS=true npx vitest run --no-file-parallelism
           tests/sql-contract/concurrency.test.ts
           --reporter=json --outputFile=concurrency-nightly.json
+        if: matrix.suite.name == 'slot-loss'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: reliability-nightly
-          path: |
-            reliability-nightly.json
-            concurrency-nightly.json
+          name: reliability-${{ matrix.suite.name }}
+          path: reliability-${{ matrix.suite.name }}.json
           retention-days: 35
 
   weekly-soak:
@@ -145,6 +162,10 @@ jobs:
             hot_percent: 0
             duration: 1800000
             fault: kafka_restart
+    # Hosted runners are useful for trend collection, but not calibrated for
+    # production SLO enforcement. Release/weekly profiles enforce those SLOs
+    # on the dedicated performance runner.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

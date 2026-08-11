@@ -179,7 +179,8 @@ suite("projection crash boundary", () => {
     expect(
       (
         await pool.query(
-          "SELECT count(*)::int AS count FROM projection_runtime.inbox",
+          "SELECT count(*)::int AS count FROM projection_runtime.inbox WHERE projection_name='test' AND generation_id=$1",
+          [generationId],
         )
       ).rows[0]?.count,
     ).toBe(0);
@@ -199,14 +200,16 @@ suite("projection crash boundary", () => {
     expect(
       (
         await pool.query(
-          "SELECT count(*)::int AS count FROM projection_runtime.inbox",
+          "SELECT count(*)::int AS count FROM projection_runtime.inbox WHERE projection_name='test' AND generation_id=$1",
+          [generationId],
         )
       ).rows[0]?.count,
     ).toBe(1);
     expect(
       (
         await pool.query(
-          "SELECT next_offset::text FROM projection_runtime.checkpoints",
+          "SELECT next_offset::text FROM projection_runtime.checkpoints WHERE projection_name='test' AND generation_id=$1",
+          [generationId],
         )
       ).rows[0]?.next_offset,
     ).toBe("1");
@@ -215,6 +218,11 @@ suite("projection crash boundary", () => {
         throw new Error("duplicate Kafka delivery reached the projection");
       }),
     ).resolves.toBe("duplicate");
+    await expect(
+      runner.process({ ...record, offset: 1n }, async () => {
+        throw new Error("duplicate Kafka delivery reached the projection");
+      }),
+    ).resolves.toBe("processed");
     expect(
       (
         await pool.query(
@@ -223,15 +231,16 @@ suite("projection crash boundary", () => {
       ).rows[0]?.count,
     ).toBe(1);
     await expect(
-      runner.process({ ...record, offset: 2n }, async () => undefined),
+      runner.process({ ...record, offset: 3n }, async () => undefined),
     ).rejects.toBeInstanceOf(ProjectionGapError);
     expect(
       (
         await pool.query(
-          "SELECT next_offset::text FROM projection_runtime.checkpoints",
+          "SELECT next_offset::text FROM projection_runtime.checkpoints WHERE projection_name='test' AND generation_id=$1",
+          [generationId],
         )
       ).rows[0]?.next_offset,
-    ).toBe("1");
+    ).toBe("2");
   });
 
   it("exposes deterministic crash barriers at every PostgreSQL boundary", async () => {

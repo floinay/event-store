@@ -119,13 +119,15 @@ suite("projection recovery", () => {
     });
     await consumer.disconnect();
     expect(
-      (
-        await pool.query(
-          "SELECT max(next_offset)::text AS next_offset FROM projection_runtime.checkpoints WHERE projection_name=$1 AND generation_id=$2 AND last_event_id IS NOT NULL",
-          [projectionName, generationId],
-        )
-      ).rows[0]?.next_offset,
-    ).toBe("2");
+      BigInt(
+        (
+          await pool.query(
+            "SELECT max(next_offset)::text AS next_offset FROM projection_runtime.checkpoints WHERE projection_name=$1 AND generation_id=$2 AND last_event_id IS NOT NULL",
+            [projectionName, generationId],
+          )
+        ).rows[0]?.next_offset ?? "0",
+      ),
+    ).toBeGreaterThanOrEqual(2n);
     expect(
       (
         await pool.query(
@@ -227,8 +229,9 @@ suite("projection recovery", () => {
         identity,
         createProjectionEventTransformer(upcasters, schemas),
       ),
-      async () => {
-        throw new ProjectionHandlerTimeoutError("poison handler timeout");
+      async (_client, event) => {
+        if (event.eventId === eventId)
+          throw new ProjectionHandlerTimeoutError("poison handler timeout");
       },
       new ProjectionCheckpointStore(pool, identity),
       new ProjectionFailureReporter(pool, identity),

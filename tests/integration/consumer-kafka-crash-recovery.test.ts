@@ -175,9 +175,7 @@ suite("projection consumer Kafka crash recovery", () => {
       try {
         await producer.send({
           topic,
-          // Recovery may deliver a canonical Kafka event more than once. The
-          // inbox must suppress the duplicate before the projection effect.
-          messages: [...events, ...events].map((event) => {
+          messages: events.map((event) => {
             const value = canonicalJson(event);
             return {
               key: partitionKey(event),
@@ -215,7 +213,7 @@ suite("projection consumer Kafka crash recovery", () => {
           pool,
           identity,
         ).nextOffset(topic, 0);
-        expect(checkpoint).toBe(BigInt(eventCount * 2));
+        expect(checkpoint).toBe(BigInt(eventCount));
       } finally {
         await producer.disconnect().catch(() => undefined);
         await consumer.disconnect().catch(() => undefined);

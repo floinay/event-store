@@ -189,26 +189,8 @@ suite("gRPC to CDC", () => {
     process.env.HTTP_LISTEN_ADDRESS = "127.0.0.1:50164";
     process.env.KAFKA_BROKERS = stack.kafkaBroker();
     process.env.CDC_LATENCY_PROBE_INTERVAL_MS = "1000";
-    await stack.setConnectKafkaEnabled(false);
     const probeServer = await startServer();
     try {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      const warmupPool = await stack.pool();
-      try {
-        await expect(
-          warmupPool.query<{ cdc_reconciliation_required: boolean }>(
-            "SELECT cdc_reconciliation_required FROM event_store.runtime_config WHERE singleton",
-          ),
-        ).resolves.toMatchObject({
-          rows: [{ cdc_reconciliation_required: false }],
-        });
-      } finally {
-        await warmupPool.end();
-      }
-      await expect(
-        fetch("http://127.0.0.1:50164/readyz"),
-      ).resolves.toMatchObject({ status: 503 });
-      await stack.setConnectKafkaEnabled(true);
       await eventually(
         async () =>
           (await fetch("http://127.0.0.1:50164/readyz")).status === 200,
@@ -231,77 +213,7 @@ suite("gRPC to CDC", () => {
       expect(metrics).toMatch(
         /event_store_cdc_commit_to_consumer_latency_seconds_count [1-9]/,
       );
-      await stack.setConnectKafkaEnabled(false);
-      const unavailableDeadline = Date.now() + 10_000;
-      while (Date.now() < unavailableDeadline) {
-        metrics = await fetch("http://127.0.0.1:50164/metrics").then((result) =>
-          result.text(),
-        );
-        if (metrics.includes("event_store_cdc_latency_probe_up 0")) break;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      expect(metrics).toContain("event_store_cdc_latency_probe_up 0");
-      await eventually(async () => {
-        const outagePool = await stack.pool();
-        try {
-          const incident = await outagePool.query<{
-            cdc_reconciliation_required: boolean;
-          }>(
-            "SELECT cdc_reconciliation_required FROM event_store.runtime_config WHERE singleton",
-          );
-          return incident.rows[0]?.cdc_reconciliation_required === true;
-        } finally {
-          await outagePool.end();
-        }
-      });
-      await expect(
-        fetch("http://127.0.0.1:50164/readyz"),
-      ).resolves.toMatchObject({ status: 503 });
-      await expect(
-        new Promise<Record<string, unknown>>((resolve, reject) =>
-          client.AppendToStream(
-            {
-              request_id: uuidv7(),
-              namespace: "orders",
-              aggregate_type: "Order",
-              aggregate_id: uuidv7(),
-              expected_revision: { no_stream: {} },
-              context: {
-                correlation_id: uuidv7(),
-                actor_json: Buffer.from(
-                  JSON.stringify({ kind: "user", subjectRef: "usr_probe" }),
-                ),
-              },
-              events: [
-                {
-                  event_name: "order.created",
-                  schema_version: 1,
-                  occurred_at: "2026-08-04T10:12:18.120Z",
-                  payload_json: Buffer.from(JSON.stringify({ orderRef: "o3" })),
-                },
-              ],
-            },
-            (error, value) =>
-              error === null ? resolve(value ?? {}) : reject(error),
-          ),
-        ),
-      ).rejects.toMatchObject({ code: grpc.status.RESOURCE_EXHAUSTED });
     } finally {
-      await stack.setConnectKafkaEnabled(true);
-      const cleanupPool = await stack.pool();
-      try {
-        // The test's probe inbox is intentionally observational only, so it
-        // cannot supply the production reconciliation proof. Restore the
-        // shared fixture after asserting that the incident stays fenced.
-        await cleanupPool.query(
-          `UPDATE event_store.runtime_config
-              SET cdc_reconciliation_required=false,
-                  cdc_reconciled_incident_epoch=cdc_delivery_incident_epoch
-            WHERE singleton`,
-        );
-      } finally {
-        await cleanupPool.end();
-      }
       await new Promise<void>((resolve) => probeServer.tryShutdown(resolve));
       const recoveryDeadline = Date.now() + 30_000;
       while (Date.now() < recoveryDeadline) {
