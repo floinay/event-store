@@ -222,7 +222,7 @@ suite("projection crash boundary", () => {
       runner.process({ ...record, offset: 1n }, async () => {
         throw new Error("duplicate Kafka delivery reached the projection");
       }),
-    ).resolves.toBe("processed");
+    ).resolves.toBe("duplicate");
     expect(
       (
         await pool.query(
