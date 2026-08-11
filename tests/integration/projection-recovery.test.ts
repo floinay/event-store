@@ -395,7 +395,7 @@ suite("projection recovery", () => {
             ),
             envelope_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
             attempt_count: 8,
-            dlq_published_at: expect.any(String),
+            dlq_published_at: expect.any(Date),
           },
         ],
       });
