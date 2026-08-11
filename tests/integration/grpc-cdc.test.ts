@@ -430,12 +430,20 @@ suite("gRPC to CDC", () => {
         },
       ],
     };
-    const call = (appendClient: AppendClient) =>
-      new Promise<Record<string, unknown>>((resolve, reject) =>
-        appendClient.AppendToStream(request, (error, response) =>
-          error === null ? resolve(response ?? {}) : reject(error),
-        ),
-      );
+    const call = (appendClient: AppendClient, deadlineMs?: number) =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        appendClient.AppendToStream(request, (error, response) => {
+          if (timer !== undefined) clearTimeout(timer);
+          if (error === null) resolve(response ?? {});
+          else reject(error);
+        });
+        if (deadlineMs !== undefined)
+          timer = setTimeout(
+            () => reject(new Error("append did not finish before deadline")),
+            deadlineMs,
+          );
+      });
     let child: ChildProcess | undefined;
     let appendClient: AppendClient | undefined;
     try {
@@ -475,7 +483,7 @@ suite("gRPC to CDC", () => {
           error === null || error === undefined ? resolve() : reject(error),
         ),
       );
-      const pending = call(appendClient).then(
+      const pending = call(appendClient, 10_000).then(
         () => "acknowledged" as const,
         () => "connection_dropped" as const,
       );
