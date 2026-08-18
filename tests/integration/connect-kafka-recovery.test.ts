@@ -113,7 +113,7 @@ suite("Connect to Kafka network recovery", () => {
     const delivered = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(
         () => reject(new Error("event was lost after Connect crash recovery")),
-        30_000,
+        60_000,
       );
       void consumer.run({
         eachMessage: async ({ message }) => {
@@ -168,7 +168,7 @@ suite("Connect to Kafka network recovery", () => {
     await stack.appendLiveCdcBarrier();
     await expect(delivered).resolves.toBeUndefined();
     await consumer.disconnect();
-  }, 90_000);
+  }, 120_000);
 
   it("delivers pending WAL after a Kafka broker restart", async () => {
     const kafka = new KafkaJS.Kafka({

@@ -36,7 +36,7 @@ suite("Debezium trust_offset", () => {
     const kafka = new KafkaJS.Kafka({
       kafkaJS: { brokers: [stack.kafkaBroker()] },
     });
-    const offsets = new Map<string, string[]>();
+    const offsets = new Map<string, { partition: number; values: string[] }>();
     const offsetConsumer = kafka.consumer({
       kafkaJS: {
         groupId: `trust-offset-observer-${uuidv7()}`,
@@ -53,13 +53,13 @@ suite("Debezium trust_offset", () => {
         replace: true,
       });
       await offsetConsumer.run({
-        eachMessage: async ({ message }) => {
+        eachMessage: async ({ partition, message }) => {
           if (message.key === null || message.value === null) return;
           const key = message.key.toString();
           const value = message.value.toString();
-          const values = offsets.get(key) ?? [];
-          if (values.at(-1) !== value) values.push(value);
-          offsets.set(key, values);
+          const state = offsets.get(key) ?? { partition, values: [] };
+          if (state.values.at(-1) !== value) state.values.push(value);
+          offsets.set(key, state);
         },
       });
       const append = async (): Promise<string> => {
@@ -99,16 +99,20 @@ suite("Debezium trust_offset", () => {
         async () => offsets.size > 0,
         "Kafka Connect did not persist the initial source offset",
       );
-      const [offsetKey, offsetValues] = [...offsets.entries()][0] ?? [];
-      const staleOffset = offsetValues?.[0];
-      if (offsetKey === undefined || staleOffset === undefined)
+      const [offsetKey, offsetState] = [...offsets.entries()][0] ?? [];
+      const staleOffset = offsetState?.values[0];
+      if (
+        offsetKey === undefined ||
+        offsetState === undefined ||
+        staleOffset === undefined
+      )
         throw new Error("could not identify the initial Connect source offset");
       const secondAppendLsn = await append();
       await eventually(
         async () =>
           offsets
             .get(offsetKey)
-            ?.some((candidate) => candidate !== staleOffset) === true,
+            ?.values.some((candidate) => candidate !== staleOffset) === true,
         "Kafka Connect did not advance the persisted source offset",
       );
       await stack.waitForLiveCdcCaughtUp(secondAppendLsn);
@@ -117,10 +121,16 @@ suite("Debezium trust_offset", () => {
       await producer.connect();
       await producer.send({
         topic: "_connect-event-store-offsets",
-        messages: [{ key: offsetKey, value: staleOffset }],
+        messages: [
+          {
+            key: offsetKey,
+            value: staleOffset,
+            partition: offsetState.partition,
+          },
+        ],
       });
       await eventually(
-        async () => offsets.get(offsetKey)?.at(-1) === staleOffset,
+        async () => offsets.get(offsetKey)?.values.at(-1) === staleOffset,
         "the stale Connect offset was not durably visible before restart",
       );
       await stack.startConnect(undefined, false);

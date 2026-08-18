@@ -526,6 +526,12 @@ suite("gRPC to CDC", () => {
         ),
       ).resolves.toMatchObject({ rows: [{ count: 1 }] });
       await terminateChild(child);
+      await eventually(async () => {
+        const activeAppend = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND pid <> pg_backend_pid() AND query LIKE '%append_v1%'",
+        );
+        return activeAppend.rows[0]?.count === 0;
+      }, 10_000);
       await holder.query("SELECT pg_advisory_unlock($1,$2)", [
         barrierClass,
         barrierKey,
