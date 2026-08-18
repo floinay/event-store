@@ -30,7 +30,7 @@ interface AppendClient extends grpc.Client {
       error: grpc.ServiceError | null,
       response?: Record<string, unknown>,
     ) => void,
-  ): void;
+  ): grpc.ClientUnaryCall;
 }
 
 suite("gRPC to CDC", () => {
@@ -433,16 +433,16 @@ suite("gRPC to CDC", () => {
     const call = (appendClient: AppendClient, deadlineMs?: number) =>
       new Promise<Record<string, unknown>>((resolve, reject) => {
         let timer: ReturnType<typeof setTimeout> | undefined;
-        appendClient.AppendToStream(request, (error, response) => {
+        const rpc = appendClient.AppendToStream(request, (error, response) => {
           if (timer !== undefined) clearTimeout(timer);
           if (error === null) resolve(response ?? {});
           else reject(error);
         });
         if (deadlineMs !== undefined)
-          timer = setTimeout(
-            () => reject(new Error("append did not finish before deadline")),
-            deadlineMs,
-          );
+          timer = setTimeout(() => {
+            rpc.cancel();
+            reject(new Error("append did not finish before deadline"));
+          }, deadlineMs);
       });
     let child: ChildProcess | undefined;
     let appendClient: AppendClient | undefined;
@@ -539,7 +539,7 @@ suite("gRPC to CDC", () => {
           error === null || error === undefined ? resolve() : reject(error),
         ),
       );
-      await expect(call(appendClient)).resolves.toMatchObject({
+      await expect(call(appendClient, 10_000)).resolves.toMatchObject({
         request_id: requestId,
       });
     } finally {
