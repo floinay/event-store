@@ -33,6 +33,32 @@ interface AppendClient extends grpc.Client {
   ): grpc.ClientUnaryCall;
 }
 
+async function terminateChild(
+  child: ChildProcess,
+  timeoutMs = 5_000,
+): Promise<[number | null, ChildProcess["signalCode"]]> {
+  if (child.exitCode !== null || child.signalCode !== null)
+    return [child.exitCode, child.signalCode];
+  const exited = once(child, "exit") as Promise<
+    [number | null, ChildProcess["signalCode"]]
+  >;
+  child.kill("SIGKILL");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      exited,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("service process did not exit after SIGKILL")),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 suite("gRPC to CDC", () => {
   const stack = new EventStoreStack();
   let server: grpc.Server;
@@ -381,11 +407,7 @@ suite("gRPC to CDC", () => {
         }
       } finally {
         appendClient.close();
-        if (child.exitCode === null) {
-          const exited = once(child, "exit");
-          child.kill("SIGKILL");
-          await exited;
-        }
+        await terminateChild(child);
       }
     },
     90_000,
@@ -503,9 +525,7 @@ suite("gRPC to CDC", () => {
           "SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND wait_event='advisory' AND query LIKE '%append_v1%'",
         ),
       ).resolves.toMatchObject({ rows: [{ count: 1 }] });
-      const exited = once(child, "exit");
-      child.kill("SIGKILL");
-      await exited;
+      await terminateChild(child);
       await holder.query("SELECT pg_advisory_unlock($1,$2)", [
         barrierClass,
         barrierKey,
@@ -544,11 +564,7 @@ suite("gRPC to CDC", () => {
       });
     } finally {
       appendClient?.close();
-      if (child?.exitCode === null) {
-        const exited = once(child, "exit");
-        child.kill("SIGKILL");
-        await exited;
-      }
+      if (child !== undefined) await terminateChild(child);
       await holder
         .query("SELECT pg_advisory_unlock($1,$2)", [barrierClass, barrierKey])
         .catch(() => undefined);

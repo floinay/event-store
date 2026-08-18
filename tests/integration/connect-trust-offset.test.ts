@@ -119,6 +119,10 @@ suite("Debezium trust_offset", () => {
         topic: "_connect-event-store-offsets",
         messages: [{ key: offsetKey, value: staleOffset }],
       });
+      await eventually(
+        async () => offsets.get(offsetKey)?.at(-1) === staleOffset,
+        "the stale Connect offset was not durably visible before restart",
+      );
       await stack.startConnect(undefined, false);
       await eventually(async () => {
         const status = (await fetch(
