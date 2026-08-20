@@ -117,6 +117,14 @@ suite("Debezium trust_offset", () => {
       );
       await stack.waitForLiveCdcCaughtUp(secondAppendLsn);
 
+      // Keep the offsets, but prevent the restarted worker from auto-starting
+      // this connector before its offset backing store has finished loading.
+      const deletion = await fetch(
+        `${stack.connectUrl}/connectors/event-store-live`,
+        { method: "DELETE" },
+      );
+      if (!deletion.ok)
+        throw new Error(`connector deletion failed: ${await deletion.text()}`);
       await stack.stopConnect();
       await producer.connect();
       await producer.send({
@@ -133,6 +141,7 @@ suite("Debezium trust_offset", () => {
         async () => offsets.get(offsetKey)?.values.at(-1) === staleOffset,
         "the stale Connect offset was not durably visible before restart",
       );
+      await producer.disconnect();
       await stack.startConnect(undefined, false);
       await eventually(async () => {
         const status = (await fetch(
