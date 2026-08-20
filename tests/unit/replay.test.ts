@@ -76,7 +76,7 @@ describe("slot-loss recovery connector", () => {
       "snapshot.select.statement.overrides.event_store.events":
         "SELECT * FROM event_store.events ORDER BY event_number",
       "lsn.flush.mode": "connector",
-      "offset.mismatch.strategy": "trust_offset",
+      "offset.mismatch.strategy": "trust_slot",
       "errors.tolerance": "none",
       "transforms.outbox.table.field.event.payload": "event_envelope_kafka",
       "transforms.outbox.route.topic.replacement": "$1.events.v1",

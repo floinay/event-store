@@ -97,7 +97,7 @@ This local Docker run measured the following:
 
 The commit-to-consumer test also measured p99.9 at 32 ms. These are experiment
 results on one local Docker environment, not a production guarantee. Shared
-GitHub runners use a regression guard of p50 ≤ 75 ms, mean ≤ 100 ms, p95 ≤ 175
+GitHub runners use a regression guard of p50 ≤ 85 ms, mean ≤ 100 ms, p95 ≤ 175
 ms and p99.9 ≤ 300 ms. The release profile runs on the dedicated performance
 runner and enforces the production SLOs: p50 ≤ 50 ms, mean ≤ 80 ms, p95 ≤ 100
 ms and p99.9 ≤ 200 ms.

@@ -30,7 +30,33 @@ interface AppendClient extends grpc.Client {
       error: grpc.ServiceError | null,
       response?: Record<string, unknown>,
     ) => void,
-  ): void;
+  ): grpc.ClientUnaryCall;
+}
+
+async function terminateChild(
+  child: ChildProcess,
+  timeoutMs = 5_000,
+): Promise<[number | null, ChildProcess["signalCode"]]> {
+  if (child.exitCode !== null || child.signalCode !== null)
+    return [child.exitCode, child.signalCode];
+  const exited = once(child, "exit") as Promise<
+    [number | null, ChildProcess["signalCode"]]
+  >;
+  child.kill("SIGKILL");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      exited,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("service process did not exit after SIGKILL")),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 suite("gRPC to CDC", () => {
@@ -381,11 +407,7 @@ suite("gRPC to CDC", () => {
         }
       } finally {
         appendClient.close();
-        if (child.exitCode === null) {
-          const exited = once(child, "exit");
-          child.kill("SIGKILL");
-          await exited;
-        }
+        await terminateChild(child);
       }
     },
     90_000,
@@ -433,16 +455,16 @@ suite("gRPC to CDC", () => {
     const call = (appendClient: AppendClient, deadlineMs?: number) =>
       new Promise<Record<string, unknown>>((resolve, reject) => {
         let timer: ReturnType<typeof setTimeout> | undefined;
-        appendClient.AppendToStream(request, (error, response) => {
+        const rpc = appendClient.AppendToStream(request, (error, response) => {
           if (timer !== undefined) clearTimeout(timer);
           if (error === null) resolve(response ?? {});
           else reject(error);
         });
         if (deadlineMs !== undefined)
-          timer = setTimeout(
-            () => reject(new Error("append did not finish before deadline")),
-            deadlineMs,
-          );
+          timer = setTimeout(() => {
+            rpc.cancel();
+            reject(new Error("append did not finish before deadline"));
+          }, deadlineMs);
       });
     let child: ChildProcess | undefined;
     let appendClient: AppendClient | undefined;
@@ -503,9 +525,13 @@ suite("gRPC to CDC", () => {
           "SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND wait_event='advisory' AND query LIKE '%append_v1%'",
         ),
       ).resolves.toMatchObject({ rows: [{ count: 1 }] });
-      const exited = once(child, "exit");
-      child.kill("SIGKILL");
-      await exited;
+      await terminateChild(child);
+      await eventually(async () => {
+        const activeAppend = await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND pid <> pg_backend_pid() AND query LIKE '%append_v1%'",
+        );
+        return activeAppend.rows[0]?.count === 0;
+      }, 10_000);
       await holder.query("SELECT pg_advisory_unlock($1,$2)", [
         barrierClass,
         barrierKey,
@@ -539,16 +565,12 @@ suite("gRPC to CDC", () => {
           error === null || error === undefined ? resolve() : reject(error),
         ),
       );
-      await expect(call(appendClient)).resolves.toMatchObject({
+      await expect(call(appendClient, 10_000)).resolves.toMatchObject({
         request_id: requestId,
       });
     } finally {
       appendClient?.close();
-      if (child?.exitCode === null) {
-        const exited = once(child, "exit");
-        child.kill("SIGKILL");
-        await exited;
-      }
+      if (child !== undefined) await terminateChild(child);
       await holder
         .query("SELECT pg_advisory_unlock($1,$2)", [barrierClass, barrierKey])
         .catch(() => undefined);

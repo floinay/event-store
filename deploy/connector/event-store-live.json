@@ -20,7 +20,7 @@
     "snapshot.mode": "no_data",
     "lsn.flush.mode": "connector",
     "status.update.interval.ms": "1000",
-    "offset.mismatch.strategy": "trust_offset",
+    "offset.mismatch.strategy": "trust_slot",
     "exactly.once.support": "required",
     "transaction.boundary": "poll",
     "poll.interval.ms": "5",

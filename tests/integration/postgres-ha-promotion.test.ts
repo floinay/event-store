@@ -107,7 +107,7 @@ suite("PostgreSQL HA promotion", () => {
           "max.batch.size": "2048",
           "max.queue.size": "8192",
           "lsn.flush.mode": "connector",
-          "offset.mismatch.strategy": "trust_offset",
+          "offset.mismatch.strategy": "trust_slot",
           "exactly.once.support": "required",
           "transaction.boundary": "poll",
           "errors.tolerance": "none",

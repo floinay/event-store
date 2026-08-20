@@ -17,7 +17,9 @@ jobs:
       - uses: bufbuild/buf-setup-action@v1
       - run: npm ci
       - run: buf lint
-      - run: buf breaking --against '.git#branch=main'
+      - run: >-
+          buf breaking
+          --against '${{ github.server_url }}/${{ github.repository }}.git#branch=${{ github.event.repository.default_branch }}'
       - run: npm run test:json-schema-compat
       - run: npm run format
       - run: npm run lint

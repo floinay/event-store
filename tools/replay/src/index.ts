@@ -719,7 +719,7 @@ export class RecoveryCutoverCoordinator {
       config["snapshot.select.statement.overrides.event_store.events"] !==
         "SELECT * FROM event_store.events ORDER BY event_number" ||
       config["lsn.flush.mode"] !== "connector" ||
-      config["offset.mismatch.strategy"] !== "trust_offset" ||
+      config["offset.mismatch.strategy"] !== "trust_slot" ||
       config["errors.tolerance"] !== "none" ||
       config["transforms.outbox.table.field.event.payload"] !==
         "event_envelope_kafka" ||
@@ -1013,7 +1013,7 @@ export function recoveryConnectorConfig(
       "SELECT * FROM event_store.events ORDER BY event_number",
     "poll.interval.ms": "5",
     "lsn.flush.mode": "connector",
-    "offset.mismatch.strategy": "trust_offset",
+    "offset.mismatch.strategy": "trust_slot",
     "exactly.once.support": "required",
     "transaction.boundary": "poll",
     "errors.tolerance": "none",

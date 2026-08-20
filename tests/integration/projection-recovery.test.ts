@@ -247,13 +247,26 @@ suite("projection recovery", () => {
       const [, , topic, partitionText, offsetText] = dlqKey.split("|");
       const partition = Number(partitionText);
       const offset = BigInt(offsetText ?? "-1");
-      await expect(
-        pool.query<{ attempt_count: number; dlq_published_at: string | null }>(
+      let failureState:
+        | { attempt_count: number; dlq_published_at: Date | null }
+        | undefined;
+      await eventually(async () => {
+        const result = await pool.query<{
+          attempt_count: number;
+          dlq_published_at: Date | null;
+        }>(
           "SELECT attempt_count,dlq_published_at FROM projection_runtime.failures WHERE projection_name=$1 AND generation_id=$2 AND event_id=$3",
           [projectionName, generationId, eventId],
-        ),
-      ).resolves.toMatchObject({
-        rows: [{ attempt_count: 8, dlq_published_at: expect.any(Date) }],
+        );
+        failureState = result.rows[0];
+        return (
+          failureState?.attempt_count === 8 &&
+          failureState.dlq_published_at !== null
+        );
+      });
+      expect(failureState).toMatchObject({
+        attempt_count: 8,
+        dlq_published_at: expect.any(Date),
       });
       const checkpointBeforeResume = await new ProjectionCheckpointStore(
         pool,

@@ -30,8 +30,21 @@ function rawEnvelope(value: Buffer | null): unknown {
   }
 }
 
-function wait(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal === undefined)
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timeout);
+      reject(new ProjectionRebalanceError("projection consumer disconnected"));
+    };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function withHeartbeats<T>(
@@ -82,6 +95,7 @@ export class KafkaProjectionRunner {
   ) {}
 
   async start(): Promise<KafkaJS.Consumer> {
+    const lifecycleAbort = new AbortController();
     const kafka = new KafkaJS.Kafka({
       kafkaJS: { brokers: this.config.brokers },
     });
@@ -254,8 +268,12 @@ export class KafkaProjectionRunner {
         const topic = batch.topic;
         const partition = batch.partition;
         const assertCurrentAssignment = (): void => {
+          if (lifecycleAbort.signal.aborted)
+            throw new ProjectionRebalanceError(
+              "projection consumer disconnected",
+            );
           if (!isRunning() || isStale())
-            throw new Error(
+            throw new ProjectionRebalanceError(
               `projection assignment was revoked for ${topic}/${partition}`,
             );
         };
@@ -349,7 +367,8 @@ export class KafkaProjectionRunner {
                 throw new Error("Kafka event record requires a key and value");
               const assignmentAbort = new AbortController();
               const assignmentWatcher = setInterval(() => {
-                if (!isRunning() || isStale()) assignmentAbort.abort();
+                if (lifecycleAbort.signal.aborted || !isRunning() || isStale())
+                  assignmentAbort.abort();
               }, 50);
               await withHeartbeats(
                 () =>
@@ -371,7 +390,10 @@ export class KafkaProjectionRunner {
               )
                 throw error;
               failure = error;
-              await withHeartbeats(() => wait(delay), heartbeat);
+              await withHeartbeats(
+                () => wait(delay, lifecycleAbort.signal),
+                heartbeat,
+              );
               continue;
             }
             for (const commitDelay of projectionRetryDelaysMs) {
@@ -396,7 +418,10 @@ export class KafkaProjectionRunner {
                 if (commitError instanceof ProjectionCrashError)
                   throw commitError;
                 failure = commitError;
-                await withHeartbeats(() => wait(commitDelay), heartbeat);
+                await withHeartbeats(
+                  () => wait(commitDelay, lifecycleAbort.signal),
+                  heartbeat,
+                );
               }
             }
             // The DB checkpoint is durable. Retrying this record as a duplicate is
@@ -442,7 +467,10 @@ export class KafkaProjectionRunner {
                 break;
               } catch (error) {
                 publishError = error;
-                await withHeartbeats(() => wait(delay), heartbeat);
+                await withHeartbeats(
+                  () => wait(delay, lifecycleAbort.signal),
+                  heartbeat,
+                );
               }
             }
             if (publishError !== undefined) throw publishError;
@@ -468,6 +496,7 @@ export class KafkaProjectionRunner {
       resolveAssigned();
     } catch (error) {
       rejectAssigned(error);
+      lifecycleAbort.abort();
       await consumer.disconnect().catch(() => undefined);
       await producer.disconnect().catch(() => undefined);
       await admin.disconnect().catch(() => undefined);
@@ -478,6 +507,7 @@ export class KafkaProjectionRunner {
     consumer.disconnect = async (): Promise<void> => {
       if (disconnected) return;
       disconnected = true;
+      lifecycleAbort.abort();
       await disconnectConsumer().catch(() => undefined);
       await producer.disconnect().catch(() => undefined);
       await admin.disconnect().catch(() => undefined);
